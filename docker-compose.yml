@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  orchestrator:
+    build: ./src/orchestrator
+    image: ghcr.io/alice-ai/alicepi-orchestrator
+    container_name: alice-orchestrator
+    environment:
+      - VOICE_OUTPUT_HOST=voice-output
+      - SPEECH_REC_HOST=speech-rec
+      - BUTTONS_HOST=buttons
+      - LLM_API_URL=http://ollama:11434/v1/chat/completions # Assuming ollama is reachable
+      - ENABLE_SESSION_LOGGING=true
+      - SESSION_LOG_PATH=/app/logs/sessions.jsonl
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - voice-output
+      - speech-rec
+      - buttons
+
+  buttons:
+    build: ./src/buttons
+    image: ghcr.io/alice-ai/alicepi-buttons
+    container_name: alice-buttons
+    privileged: true # Required for GPIO access
+    environment:
+      - BUTTONS_PORT=5558
+    volumes:
+      - /dev/gpiomem:/dev/gpiomem
+      - /dev/gpiochip*:/dev/gpiochip*
+
+  voice-input:
+    build: ./src/voice_input
+    image: ghcr.io/alice-ai/alicepi-voice-input
+    container_name: alice-voice-input
+    privileged: true # Required for Microphone access
+    environment:
+      - SPEECH_REC_HOST=speech-rec
+    devices:
+      - "/dev/snd:/dev/snd"
+
+  voice-output:
+    build: ./src/voice_output
+    image: ghcr.io/alice-ai/alicepi-voice-output
+    container_name: alice-voice-output
+    privileged: true # Required for Speaker access
+    devices:
+      - "/dev/snd:/dev/snd"
+
+  speech-rec:
+    build: ./src/speech_rec
+    image: ghcr.io/alice-ai/alicepi-speech-rec
+    container_name: alice-speech-rec
+    ports:
+      - "5001:5001" # Control
+      - "5002:5002" # Audio In
+      - "5003:5003" # Text Out
+
+networks:
+  default:
+    name: alice-network

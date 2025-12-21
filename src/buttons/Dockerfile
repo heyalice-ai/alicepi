@@ -8,8 +8,8 @@ RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --frozen --no-install-project --system
 
-# Copy source code
-COPY . .
+COPY src/ src/
 
-# Run the application
-CMD ["uv", "run", "python", "main.py"]
+# GPIO access often requires root or being in the 'gpio' group
+# For simplicity in Docker, we run as root, butprivileged: true in docker-compose is usually needed
+CMD ["uv", "run", "python", "-u", "src/main.py"]

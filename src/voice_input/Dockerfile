@@ -1,26 +1,15 @@
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
-
-# Install system dependencies (PortAudio for PyAudio)
-RUN apt-get update && apt-get install -y \
-    portaudio19-dev \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+FROM ghcr.io/alice-ai/alicepi-base
 
 WORKDIR /app
 
-# Enable bytecode compilation
-ENV UV_COMPILE_BYTECODE=1
-
 # Install dependencies using uv
-# Use cache mount for faster rebuilds
+# We use --system because we want to leverage the pre-installed packages in the base image.
 RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project
+    uv sync --frozen --no-install-project --system
 
 # Copy source code
 COPY src/ ./src/
 
 # Set entrypoint
 CMD ["uv", "run", "python", "-m", "src.main"]
-

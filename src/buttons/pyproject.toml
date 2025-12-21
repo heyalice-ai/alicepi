@@ -1,0 +1,11 @@
+[project]
+name = "buttons"
+version = "0.1.0"
+description = "AlicePi Buttons Service"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyzmq==25.1.1",
+    "gpiozero==2.0.1",
+    "RPi.GPIO==0.7.1",
+]

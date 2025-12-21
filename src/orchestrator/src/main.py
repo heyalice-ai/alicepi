@@ -107,10 +107,44 @@ class Orchestrator:
                 if self.buttons_sub_socket.poll(100): 
                     msg = self.buttons_sub_socket.recv_string()
                     logger.info(f"Received Button Event: {msg}")
+                    try:
+                        payload = json.loads(msg)
+                        event = payload.get("event")
+                        if event:
+                            self._handle_button_event(event)
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to decode button event: {msg}")
             except zmq.ZMQError as e:
                 if self.running:
                     logger.error(f"ZMQ Error in buttons loop: {e}")
                 time.sleep(1)
+
+    def _handle_button_event(self, event):
+        logger.info(f"Handling button event: {event}")
+        if event == "RESET":
+            logger.info("Resetting session...")
+            self.session.log_session()
+            self.session.clear()
+            
+            # Send stop command to voice output if speaking
+            stop_msg = {
+                "type": "control",
+                "command": "stop"
+            }
+            self.pub_socket.send_multipart([
+                config.ZMQ_TOPIC_CONTROL.encode('utf-8'),
+                json.dumps(stop_msg).encode('utf-8')
+            ])
+            
+            # Also reset SR (Speech Recognition) state if possible
+            self.sr.send_command("RESET")
+            self.state = State.LISTENING
+        elif event == "LONG_RESET":
+            logger.warning("Factory reset requested (MOCK)")
+            # In a real system, this might trigger a system reboot or config wipe
+        elif "VOLUME" in event:
+            logger.info(f"Volume change requested: {event}")
+            # Could send a control message to Voice Output to adjust ALSA volume
 
     def _handle_sr_text(self, line):
         try:

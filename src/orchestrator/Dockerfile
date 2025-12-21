@@ -1,17 +1,13 @@
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+FROM ghcr.io/alice-ai/alicepi-base
 
 WORKDIR /app
 
-# Enable bytecode compilation
-ENV UV_COMPILE_BYTECODE=1
-
 # Install dependencies using uv
+# We use --system because we want to leverage the pre-installed packages in the base image.
 RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project
+    uv sync --frozen --no-install-project --system
 
 COPY src/ src/
 
 CMD ["uv", "run", "python", "-u", "src/main.py"]
-
