@@ -1,6 +1,9 @@
 name: Build Speech Rec
 
 on:
+  workflow_run:
+    workflows: ["Build Base Image"]
+    types: [completed]
   push:
     branches: [ "main" ]
     paths:
@@ -11,10 +14,12 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: alice-ai/alicepi-speech-rec
+  BASE_IMAGE: ghcr.io/alice-ai/alicepi-base
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
     permissions:
       contents: read
       packages: write
@@ -42,6 +47,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      - name: Pull base cache
+        run: docker pull ${{ env.BASE_IMAGE }}:latest || true
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -50,5 +58,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: |
+            type=registry,ref=${{ env.BASE_IMAGE }}:latest
+            type=gha
           cache-to: type=gha,mode=max
