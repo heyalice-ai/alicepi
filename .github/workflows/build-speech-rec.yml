@@ -13,8 +13,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: alice-ai/alicepi-speech-rec
-  BASE_IMAGE: ghcr.io/alice-ai/alicepi-base
+  IMAGE_NAME: heyalice-ai/alicepi-speech-rec
+  BASE_IMAGE: ghcr.io/heyalice-ai/alicepi-base
 
 jobs:
   build:

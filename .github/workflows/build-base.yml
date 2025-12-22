@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: alice-ai/alicepi-base
+  IMAGE_NAME: heyalice-ai/alicepi-base
 
 jobs:
   build:

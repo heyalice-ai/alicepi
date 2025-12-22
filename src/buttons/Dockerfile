@@ -1,4 +1,4 @@
-FROM ghcr.io/alice-ai/alicepi-base
+FROM ghcr.io/heyalice-ai/alicepi-base
 
 WORKDIR /app
 
