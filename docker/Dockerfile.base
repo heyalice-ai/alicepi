@@ -1,5 +1,7 @@
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
+WORKDIR /app
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -13,14 +15,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Enable bytecode compilation
+# Enable bytecode compilation and configure the shared virtual environment
 ENV UV_COMPILE_BYTECODE=1
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv
+ENV PATH="/app/.venv/bin:${PATH}"
 
-# Pre-install heavy shared dependencies in the system environment
-# This allows services to inherit these layers without re-downloading them.
-# We use --system because we want these to be available globally in the image.
+# Create the shared virtual environment all services will reuse
+RUN uv venv /app/.venv
+
+# Pre-install heavy shared dependencies in both the system image and the shared venv
 RUN uv pip install --system \
     "numpy>=2.3.5" \
     "torch" \
     "torchaudio" \
+    "pyzmq>=27.1.0" \
+    && uv pip install --python /app/.venv/bin/python \
+    "numpy>=2.3.5" \
+    "torch" \
+    "torchaudio" \
     "pyzmq>=27.1.0"
+
+# Build and install the protobuf package once here so leaf images can reuse it
+COPY src/proto_defs /proto_defs
+RUN uv pip install --system /proto_defs \
+    && uv pip install --python /app/.venv/bin/python /proto_defs
+
+# Prevent re-generation of protobufs downstream now that they're baked into the base image
+ENV ALICEPI_PROTO_SKIP_BUILD=1

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 
@@ -5,6 +6,10 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
 def _generate(root: Path) -> None:
+    if os.getenv("ALICEPI_PROTO_SKIP_BUILD"):
+        # Base image already generated the protobuf modules; skip rebuilding.
+        return
+
     proto_dir = root / "src" / "alicepi_proto"
     proto_file = proto_dir / "vad.proto"
     out_dir = root / "src"
