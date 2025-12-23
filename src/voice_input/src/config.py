@@ -7,7 +7,7 @@ CHUNK_SIZE = 512
 
 # VAD Configuration
 VAD_THRESHOLD = 0.5
-SILENCE_DURATION_MS = 500  # Not strictly used yet, but good for robust logic
+SILENCE_DURATION_MS = 500  # Hangover duration: continue streaming for this many ms after speech ends
 
 # Networking Configuration
 # We bind to all interfaces to allow other containers to connect

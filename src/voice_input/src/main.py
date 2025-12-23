@@ -22,11 +22,23 @@ def main():
     vad = VADWrapper()
     streamer = AudioStreamer()
 
+    # Hangover state management
+    # When speech ends, we continue streaming for a "hangover" period
+    # to avoid cutting off trailing sounds and provide context to the recognizer
+    last_speech_time = None
+    
+    # Validate configuration
+    if config.SILENCE_DURATION_MS <= 0:
+        raise ValueError(f"SILENCE_DURATION_MS must be positive, got {config.SILENCE_DURATION_MS}")
+    
+    hangover_duration = config.SILENCE_DURATION_MS / 1000.0  # Convert to seconds
+    
     try:
         capture.start()
         streamer.start()
 
         logger.info("Voice Input Service Started")
+        logger.info(f"VAD Hangover Duration: {config.SILENCE_DURATION_MS}ms")
         
         while True:
             chunk = capture.read_chunk()
@@ -34,18 +46,26 @@ def main():
                 # Should not happen in current loop implementation
                 break
 
-            if vad.process(chunk):
-                # Speech detected, stream it
-                # logger.debug("Speech detected")
+            current_time = time.time()
+            is_speech = vad.process(chunk)
+            
+            if is_speech:
+                # Speech detected, stream it and update last speech time
                 streamer.send_chunk(chunk)
+                last_speech_time = current_time
             else:
-                # Silence
-                # We might want to stream a bit of silence context or just nothing
-                # For now, simplistic VAD: no speech, no stream.
-                # NOTE: A real system needs "hangover" (keep sending for N ms after speech ends)
-                # to prevent choppy sentences.
-                # However, task just says "Output raw PCM data when speech is detected."
-                pass
+                # Silence detected
+                # Check if we're in hangover period (recently had speech)
+                if last_speech_time is not None:
+                    time_since_speech = current_time - last_speech_time
+                    
+                    if time_since_speech < hangover_duration:
+                        # Still in hangover period, continue streaming silence
+                        streamer.send_chunk(chunk)
+                    else:
+                        # Hangover period ended, stop streaming
+                        last_speech_time = None
+                # else: No recent speech, don't stream
                 
     except KeyboardInterrupt:
         logger.info("Stopping...")
