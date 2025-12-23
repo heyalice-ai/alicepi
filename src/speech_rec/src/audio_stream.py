@@ -7,6 +7,8 @@ try:
     from . import interfaces
 except ImportError:
     import interfaces
+from alicepi_proto.vad import VadPacketFramer
+from alicepi_proto import vad_pb2
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,8 @@ class AudioStreamServer:
         self.running = False
         self.audio_queue = queue.Queue()
         self.thread = None
+        self.framer = VadPacketFramer()
+        self.last_status = vad_pb2.Status.UNKNOWN
 
     def start(self):
         self.running = True
@@ -48,6 +52,7 @@ class AudioStreamServer:
             try:
                 client, addr = self.server_socket.accept()
                 logger.info(f"Accepted audio connection from {addr}")
+                self.framer = VadPacketFramer()
                 self.client_socket = client
                 self._receive_loop(client)
             except OSError:
@@ -66,10 +71,14 @@ class AudioStreamServer:
                     logger.info("Audio client disconnected")
                     break
                 
-                # In a real scenario, you'd likely want to handle framing or just raw stream 
-                # For faster-whisper we usually feed numpy arrays. 
-                # We will just put raw bytes in queue and let the consumer convert.
-                self.audio_queue.put(data)
+                packets = self.framer.decode(data)
+                for packet in packets:
+                    payload_type = packet.WhichOneof("payload")
+                    if payload_type == "audio":
+                        self.audio_queue.put(packet.audio.data)
+                    elif payload_type == "status":
+                        self.last_status = packet.status
+                        logger.debug(f"VAD status: {vad_pb2.Status.Name(packet.status)}")
                 
             except OSError:
                 break

@@ -6,6 +6,8 @@ from . import config
 from .audio_capture import AudioCapture
 from .vad import VADWrapper
 from .streamer import AudioStreamer
+from alicepi_proto import vad_pb2
+from alicepi_proto.vad import make_audio_packet, make_status_packet
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("VoiceInputService")
@@ -26,6 +28,8 @@ def main():
     # When speech ends, we continue streaming for a "hangover" period
     # to avoid cutting off trailing sounds and provide context to the recognizer
     last_speech_time = None
+    last_status = vad_pb2.Status.SILENCE
+    sequence = 0
     
     # Validate configuration
     if config.SILENCE_DURATION_MS <= 0:
@@ -47,11 +51,26 @@ def main():
                 break
 
             current_time = time.time()
+            now_ms = int(current_time * 1000)
             is_speech = vad.process(chunk)
             
             if is_speech:
                 # Speech detected, stream it and update last speech time
-                streamer.send_chunk(chunk)
+                sequence += 1
+                packet = make_audio_packet(
+                    sample_rate=config.SAMPLE_RATE,
+                    channels=config.CHANNELS,
+                    sequence=sequence,
+                    data=chunk,
+                    timestamp_ms=now_ms,
+                )
+                streamer.send_packet(packet)
+                if last_status != vad_pb2.Status.SPEECH_DETECTED:
+                    status_packet = make_status_packet(
+                        vad_pb2.Status.SPEECH_DETECTED, timestamp_ms=now_ms
+                    )
+                    streamer.send_packet(status_packet)
+                    last_status = vad_pb2.Status.SPEECH_DETECTED
                 last_speech_time = current_time
             else:
                 # Silence detected
@@ -61,11 +80,38 @@ def main():
                     
                     if time_since_speech < hangover_duration:
                         # Still in hangover period, continue streaming silence
-                        streamer.send_chunk(chunk)
+                        sequence += 1
+                        packet = make_audio_packet(
+                            sample_rate=config.SAMPLE_RATE,
+                            channels=config.CHANNELS,
+                            sequence=sequence,
+                            data=chunk,
+                            timestamp_ms=now_ms,
+                        )
+                        streamer.send_packet(packet)
+                        if last_status != vad_pb2.Status.SPEECH_HANGOVER:
+                            status_packet = make_status_packet(
+                                vad_pb2.Status.SPEECH_HANGOVER, timestamp_ms=now_ms
+                            )
+                            streamer.send_packet(status_packet)
+                            last_status = vad_pb2.Status.SPEECH_HANGOVER
                     else:
                         # Hangover period ended, stop streaming
+                        if last_status != vad_pb2.Status.SILENCE:
+                            status_packet = make_status_packet(
+                                vad_pb2.Status.SILENCE, timestamp_ms=now_ms
+                            )
+                            streamer.send_packet(status_packet)
+                            last_status = vad_pb2.Status.SILENCE
                         last_speech_time = None
-                # else: No recent speech, don't stream
+                else:
+                    # No recent speech, just emit silence status transitions
+                    if last_status != vad_pb2.Status.SILENCE:
+                        status_packet = make_status_packet(
+                            vad_pb2.Status.SILENCE, timestamp_ms=now_ms
+                        )
+                        streamer.send_packet(status_packet)
+                        last_status = vad_pb2.Status.SILENCE
                 
     except KeyboardInterrupt:
         logger.info("Stopping...")

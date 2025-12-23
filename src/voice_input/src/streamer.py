@@ -2,6 +2,7 @@ import socket
 import logging
 import threading
 from . import config
+from alicepi_proto.vad import encode_packet
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,13 @@ class AudioStreamer:
             except Exception as e:
                 logger.error(f"Error accepting connection: {e}")
 
-    def send_chunk(self, data):
+    def send_packet(self, packet):
+        """Encode and send a single VadPacket."""
+        payload = encode_packet(packet)
         with self.lock:
             if self.client_socket:
                 try:
-                    self.client_socket.sendall(data)
+                    self.client_socket.sendall(payload)
                 except BrokenPipeError:
                     logger.warning("Client disconnected")
                     self.client_socket.close()

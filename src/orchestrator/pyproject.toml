@@ -7,4 +7,5 @@ requires-python = ">=3.11"
 dependencies = [
     "pyzmq==25.1.1",
     "requests==2.31.0",
+    "alicepi-proto @ ../proto_defs",
 ]

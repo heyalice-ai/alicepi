@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   orchestrator:
-    build: ./src/orchestrator
+    build:
+      context: .
+      dockerfile: ./src/orchestrator/Dockerfile
     image: ghcr.io/heyalice-ai/alicepi-orchestrator
     container_name: alice-orchestrator
     environment:
@@ -20,7 +22,9 @@ services:
       - buttons
 
   buttons:
-    build: ./src/buttons
+    build:
+      context: .
+      dockerfile: ./src/buttons/Dockerfile
     image: ghcr.io/heyalice-ai/alicepi-buttons
     container_name: alice-buttons
     privileged: true # Required for GPIO access
@@ -31,7 +35,9 @@ services:
       - /dev/gpiochip*:/dev/gpiochip*
 
   voice-input:
-    build: ./src/voice_input
+    build:
+      context: .
+      dockerfile: ./src/voice_input/Dockerfile
     image: ghcr.io/heyalice-ai/alicepi-voice-input
     container_name: alice-voice-input
     privileged: true # Required for Microphone access
@@ -41,7 +47,9 @@ services:
       - "/dev/snd:/dev/snd"
 
   voice-output:
-    build: ./src/voice_output
+    build:
+      context: .
+      dockerfile: ./src/voice_output/Dockerfile
     image: ghcr.io/heyalice-ai/alicepi-voice-output
     container_name: alice-voice-output
     privileged: true # Required for Speaker access
@@ -49,7 +57,9 @@ services:
       - "/dev/snd:/dev/snd"
 
   speech-rec:
-    build: ./src/speech_rec
+    build:
+      context: .
+      dockerfile: ./src/speech_rec/Dockerfile
     image: ghcr.io/heyalice-ai/alicepi-speech-rec
     container_name: alice-speech-rec
     ports:

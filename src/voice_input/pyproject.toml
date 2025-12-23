@@ -9,4 +9,5 @@ dependencies = [
     "pyaudio",
     "torch",
     "torchaudio",
+    "alicepi-proto @ ../proto_defs",
 ]
