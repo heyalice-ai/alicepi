@@ -19,7 +19,7 @@ class AudioStreamServer:
         self.server_socket = None
         self.client_socket = None
         self.running = False
-        self.audio_queue = queue.Queue()
+        self.packet_queue = queue.Queue()
         self.thread = None
         self.framer = VadPacketFramer()
         self.last_status = vad_pb2.Status.UNKNOWN
@@ -74,11 +74,11 @@ class AudioStreamServer:
                 packets = self.framer.decode(data)
                 for packet in packets:
                     payload_type = packet.WhichOneof("payload")
-                    if payload_type == "audio":
-                        self.audio_queue.put(packet.audio.data)
-                    elif payload_type == "status":
+                    if payload_type == "status":
                         self.last_status = packet.status
                         logger.debug(f"VAD status: {vad_pb2.Status.Name(packet.status)}")
+                    if payload_type:
+                        self.packet_queue.put(packet)
                 
             except OSError:
                 break
@@ -89,13 +89,13 @@ class AudioStreamServer:
         if self.client_socket == client_sock:
             self.client_socket = None
 
-    def get_audio_chunk(self):
-        """Non-blocking get from queue"""
+    def get_packet(self):
+        """Non-blocking get of the next VadPacket."""
         try:
-            return self.audio_queue.get_nowait()
+            return self.packet_queue.get_nowait()
         except queue.Empty:
             return None
     
     def clear_queue(self):
-        with self.audio_queue.mutex:
-            self.audio_queue.queue.clear()
+        with self.packet_queue.mutex:
+            self.packet_queue.queue.clear()

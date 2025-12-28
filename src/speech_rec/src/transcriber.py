@@ -2,6 +2,9 @@ import logging
 import numpy as np
 import threading
 import time
+from typing import Optional
+
+from alicepi_proto import vad_pb2
 
 # Guard against missing dependency during development/testing outside container
 try:
@@ -24,6 +27,7 @@ class AudioTranscriber:
         
         # Confg
         self.sample_rate = 16000 # Whisper expects 16k
+        self._warned_sample_rate = False
         
     def _load_model(self):
         if WhisperModel is None:
@@ -54,13 +58,35 @@ class AudioTranscriber:
         
         self.audio_buffer = np.concatenate((self.audio_buffer, float32_data))
 
-    def transcribe(self):
+    def process_vad_packet(self, packet: vad_pb2.VadPacket):
+        """Convert audio payloads from the VAD proto into the internal buffer."""
+        payload_type = packet.WhichOneof("payload")
+        if payload_type != "audio":
+            return
+
+        audio = packet.audio
+
+        if audio.channels != 1:
+            logger.warning(f"Unsupported channel count ({audio.channels}); expected mono")
+            return
+
+        if audio.sample_rate != self.sample_rate and not self._warned_sample_rate:
+            logger.warning(
+                f"Incoming sample_rate {audio.sample_rate} does not match expected {self.sample_rate}"
+            )
+            self._warned_sample_rate = True
+
+        self.process_raw_bytes(audio.data)
+
+    def transcribe(self, cancel_event: Optional[threading.Event] = None):
         """
         Attempt to transcribe the current buffer.
         Returns a generator yielding text segments.
         This is a simplified implementation. Real real-time streaming with VAD-triggering is more complex.
         For now, we will perform transcription on available buffer if it meets a minimum length.
         """
+        if cancel_event and cancel_event.is_set():
+            return
         if self.model is None:
             return
 
@@ -72,15 +98,20 @@ class AudioTranscriber:
         # or process sliding windows. 
         # Here we will just process the whole buffer and clear it, which is closer to "phrase-based" than "streaming"
         
+        if cancel_event and cancel_event.is_set():
+            return
+
         segments, info = self.model.transcribe(
-            self.audio_buffer, 
+            self.audio_buffer,
             beam_size=5,
             language="en",
-            vad_filter=True  # faster-whisper has built-in Silero VAD
+            vad_filter=True,  # faster-whisper has built-in Silero VAD
         )
 
         text_output = []
         for segment in segments:
+            if cancel_event and cancel_event.is_set():
+                return
             text_output.append(segment.text)
         
         # Clear buffer after transcription (naive approach - potentially cutting off words)
@@ -92,4 +123,4 @@ class AudioTranscriber:
 
     def reset(self):
         self.audio_buffer = np.array([], dtype=np.float32)
-
+        self._warned_sample_rate = False

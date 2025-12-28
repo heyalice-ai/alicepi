@@ -18,6 +18,7 @@ except ImportError:
     import interfaces
     from audio_stream import AudioStreamServer
     from transcriber import AudioTranscriber
+from alicepi_proto import vad_pb2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +34,15 @@ class SpeechRecService:
         
         self.audio_server = AudioStreamServer(port=interfaces.SR_AUDIO_INPUT_PORT)
         self.transcriber = AudioTranscriber(model_size="tiny.en") # Use tiny.en for speed
+        self.transcription_thread = None
+        self.transcription_cancel = threading.Event()
         
         self.control_sock_server = None
         self.text_sock_server = None
         
         # State
         self.is_listening = False
+        self._last_vad_status = vad_pb2.Status.SILENCE
 
     def start(self):
         self.running = True
@@ -62,6 +66,7 @@ class SpeechRecService:
     def stop(self):
         logger.info("Stopping service...")
         self.running = False
+        self._cancel_transcription()
         self.audio_server.stop()
         if self.control_sock_server:
             self.control_sock_server.close()
@@ -124,6 +129,7 @@ class SpeechRecService:
             self.is_listening = False
             self.transcriber.reset()
             self.audio_server.clear_queue()
+            self._cancel_transcription()
             logger.info("Reset requested")
 
     def _emit_text(self, text, is_final=False):
@@ -143,19 +149,62 @@ class SpeechRecService:
 
     def _main_loop(self):
         while self.running:
-            # 1. Ingest Audio
-            chunk = self.audio_server.get_audio_chunk()
-            if chunk:
-                self.transcriber.process_raw_bytes(chunk)
+            # 1. Ingest Audio/Status packets from the VAD stream
+            while True:
+                packet = self.audio_server.get_packet()
+                if packet is None:
+                    break
+
+                payload_type = packet.WhichOneof("payload")
+                if payload_type == "audio":
+                    self.transcriber.process_vad_packet(packet)
+                elif payload_type == "status":
+                    self._handle_vad_status(packet.status)
             
             # 2. Transcribe if listening
             if self.is_listening:
-                text = self.transcriber.transcribe()
-                if text:
-                    logger.info(f"Transcribed: {text}")
-                    self._emit_text(text, is_final=True) # Treating all as final for this simple chunks version
+                self._maybe_start_transcription()
             
             time.sleep(0.01)
+
+    def _maybe_start_transcription(self):
+        if self.transcription_thread and self.transcription_thread.is_alive():
+            return
+
+        # Clear stale cancel flags from prior runs
+        if self.transcription_cancel.is_set():
+            self.transcription_cancel = threading.Event()
+
+        def _worker():
+            try:
+                text = self.transcriber.transcribe(cancel_event=self.transcription_cancel)
+                if text and not self.transcription_cancel.is_set():
+                    logger.info(f"Transcribed: {text}")
+                    self._emit_text(text, is_final=True)  # Treating all as final for this simple chunks version
+            except Exception:
+                logger.exception("Transcription worker failed")
+
+        self.transcription_thread = threading.Thread(target=_worker, daemon=True)
+        self.transcription_thread.start()
+
+    def _handle_vad_status(self, status: int):
+        logger.debug(f"VAD status received: {vad_pb2.Status.Name(status)}")
+        # If we transitioned from silence to speech, drop any in-flight transcription and reset buffers
+        if status == vad_pb2.Status.SPEECH_DETECTED and self._last_vad_status == vad_pb2.Status.SILENCE:
+            logger.info("New speech detected after silence; resetting transcription state")
+            self.transcriber.reset()
+            self.audio_server.clear_queue()
+            self._cancel_transcription()
+
+        self._last_vad_status = status
+
+    def _cancel_transcription(self):
+        if self.transcription_thread and self.transcription_thread.is_alive():
+            self.transcription_cancel.set()
+            self.transcription_thread.join(timeout=0.5)
+            if self.transcription_thread.is_alive():
+                logger.warning("Transcription thread did not stop after cancel; it will be abandoned")
+        self.transcription_thread = None
 
 if __name__ == "__main__":
     service = SpeechRecService()
