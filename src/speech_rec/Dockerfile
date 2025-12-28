@@ -3,12 +3,12 @@ FROM ghcr.io/heyalice-ai/alicepi-base
 WORKDIR /app
 
 # Install dependencies using uv
-RUN --mount=type=bind,source=src/speech_rec/pyproject.toml,target=pyproject.toml \
-    --mount=type=bind,source=src/speech_rec/uv.lock,target=uv.lock \
+RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --frozen --no-install-project
 
 # Create src directory
-COPY src/speech_rec/src/ ./src/
+COPY src/ ./src/
 
 # Environment variables
 ENV PYTHONPATH=/app
