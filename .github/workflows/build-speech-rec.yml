@@ -46,6 +46,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # set latest tag for default branch
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Pull base cache
         run: docker pull ${{ env.BASE_IMAGE }}:latest || true
