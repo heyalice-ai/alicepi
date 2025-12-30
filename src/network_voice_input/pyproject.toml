@@ -1,0 +1,20 @@
+[project]
+name = "network-voice-input"
+version = "0.1.0"
+description = "Listens for voice input from the network, performs VAD, and streams to Speech Rec"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyaudio>=0.2.14",
+    "torch>=2.2.0",
+    "numpy>=1.26.0",
+    "alicepi-proto",
+    "torchaudio>=2.9.1",
+    "packaging>=25.0",
+]
+
+[tool.uv.sources]
+alicepi-proto = { path = "../proto_defs", editable = true }
+
+[project.scripts]
+network-voice-input = "main:main"
