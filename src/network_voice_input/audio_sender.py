@@ -1,6 +1,6 @@
+import argparse
 import curses
 import socket
-import sys
 import threading
 import time
 import wave
@@ -16,7 +16,7 @@ RATE = 16000
 
 
 class AudioSender:
-    def __init__(self, host, port):
+    def __init__(self, host, port, playback_path=None):
         self.host = host
         self.port = port
         self.p = pyaudio.PyAudio()
@@ -30,6 +30,9 @@ class AudioSender:
         self.record_frames = []
         self.record_lock = threading.Lock()
         self.status_message = ""
+        self.playback_path = Path(playback_path).expanduser() if playback_path else None
+        self.playback_rate = RATE
+        self.playback_channels = CHANNELS
 
     def get_input_devices(self):
         devices = []
@@ -79,41 +82,17 @@ class AudioSender:
                 return devices[current_row][0]
 
     def stream_audio(self):
+        wave_reader = None
         try:
-            self.stream = self.p.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=RATE,
-                input=True,
-                input_device_index=self.device_index,
-                frames_per_buffer=CHUNK,
-            )
-
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
-            silence_chunk = b"\x00" * (CHUNK * self.sample_width)
 
-            while self.running:
-                audio_chunk = None
-
-                if not self.muted or self.recording:
-                    audio_chunk = self.stream.read(
-                        CHUNK, exception_on_overflow=False
-                    )
-
-                if not self.muted and audio_chunk is not None:
-                    payload = audio_chunk
-                else:
-                    payload = silence_chunk
-
-                self.socket.sendall(payload)
-
-                if self.muted and not self.recording:
-                    time.sleep(CHUNK / RATE)
-
-                if self.recording and audio_chunk is not None:
-                    with self.record_lock:
-                        self.record_frames.append(audio_chunk)
+            if self.playback_path:
+                wave_reader = wave.open(str(self.playback_path), "rb")
+                self.configure_playback_source(wave_reader)
+                self.stream_file_audio(wave_reader)
+            else:
+                self.stream_microphone_audio()
 
         except Exception as e:
             self.status_message = f"Stream error: {e}"
@@ -123,13 +102,98 @@ class AudioSender:
             if self.stream:
                 self.stream.stop_stream()
                 self.stream.close()
+            if wave_reader:
+                wave_reader.close()
+
+    def configure_playback_source(self, wave_reader):
+        channels = wave_reader.getnchannels()
+        sample_width = wave_reader.getsampwidth()
+        rate = wave_reader.getframerate()
+
+        if channels != CHANNELS:
+            raise ValueError(
+                f"Playback file must be mono ({CHANNELS} channel), got {channels}"
+            )
+        if sample_width != self.sample_width:
+            self.sample_width = sample_width
+        if rate != RATE:
+            raise ValueError(f"Playback file must be {RATE} Hz, got {rate}")
+
+        self.playback_rate = rate
+        self.playback_channels = channels
+
+    def stream_microphone_audio(self):
+        if self.socket is None:
+            raise RuntimeError("Socket not initialized")
+        sock = self.socket
+
+        self.stream = self.p.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RATE,
+            input=True,
+            input_device_index=self.device_index,
+            frames_per_buffer=CHUNK,
+        )
+
+        silence_chunk = b"\x00" * (CHUNK * self.sample_width)
+
+        while self.running:
+            audio_chunk = None
+
+            if not self.muted or self.recording:
+                audio_chunk = self.stream.read(CHUNK, exception_on_overflow=False)
+
+            if not self.muted and audio_chunk is not None:
+                payload = audio_chunk
+            else:
+                payload = silence_chunk
+
+            sock.sendall(payload)
+
+            if self.muted and not self.recording:
+                time.sleep(CHUNK / RATE)
+
+            if self.recording and audio_chunk is not None:
+                with self.record_lock:
+                    self.record_frames.append(audio_chunk)
+
+    def stream_file_audio(self, wave_reader):
+        if self.socket is None:
+            raise RuntimeError("Socket not initialized")
+        sock = self.socket
+
+        chunk_frames = CHUNK
+        silence_chunk = b"\x00" * (chunk_frames * self.sample_width)
+
+        while self.running:
+            if self.muted:
+                sock.sendall(silence_chunk)
+                time.sleep(chunk_frames / self.playback_rate)
+                continue
+
+            data = wave_reader.readframes(chunk_frames)
+            if not data:
+                self.status_message = "Playback finished"
+                self.running = False
+                break
+
+            sock.sendall(data)
+            frames_sent = len(data) // (self.sample_width * self.playback_channels)
+            if frames_sent == 0:
+                time.sleep(chunk_frames / self.playback_rate)
+            else:
+                time.sleep(frames_sent / self.playback_rate)
 
     def run(self, stdscr):
         curses.curs_set(0)
-        self.device_index = self.select_device(stdscr)
+        if self.playback_path:
+            self.status_message = f"Playback file: {self.playback_path}"
+        else:
+            self.device_index = self.select_device(stdscr)
 
-        if self.device_index is None:
-            return
+            if self.device_index is None:
+                return
 
         # Start streaming in a separate thread
         stream_thread = threading.Thread(target=self.stream_audio)
@@ -146,9 +210,15 @@ class AudioSender:
                     return max(0, min(row, max_row))
 
                 stdscr.addstr(clamp(0), 0, f"Streaming to {self.host}:{self.port}")
+                if self.playback_path:
+                    stdscr.addstr(clamp(1), 0, f"Source: {self.playback_path}")
                 stdscr.addstr(clamp(2), 0, "Controls:")
                 stdscr.addstr(clamp(3), 0, "  [M] Toggle Mute")
-                stdscr.addstr(clamp(4), 0, "  [R] Toggle Record")
+                stdscr.addstr(
+                    clamp(4),
+                    0,
+                    "  [R] Toggle Record" + (" (N/A)" if self.playback_path else ""),
+                )
                 stdscr.addstr(clamp(5), 0, "  [Q] Quit")
 
                 status = "MUTED" if self.muted else "LIVE"
@@ -171,7 +241,9 @@ class AudioSender:
                 if key == ord("m") or key == ord("M"):
                     self.muted = not self.muted
                 elif key == ord("r") or key == ord("R"):
-                    if not self.recording:
+                    if self.playback_path:
+                        self.status_message = "Recording disabled in file mode"
+                    elif not self.recording:
                         self.start_recording()
                     else:
                         self.stop_recording(stdscr)
@@ -254,12 +326,18 @@ class AudioSender:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <host> <port>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Stream live microphone audio or a WAV file to a TCP endpoint."
+    )
+    parser.add_argument("host", help="Destination host")
+    parser.add_argument("port", type=int, help="Destination port")
+    parser.add_argument(
+        "--file",
+        dest="playback_file",
+        help="Path to a WAV file to stream instead of the microphone",
+    )
 
-    host = sys.argv[1]
-    port = int(sys.argv[2])
+    args = parser.parse_args()
 
-    sender = AudioSender(host, port)
+    sender = AudioSender(args.host, args.port, playback_path=args.playback_file)
     curses.wrapper(sender.run)
