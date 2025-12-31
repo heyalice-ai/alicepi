@@ -5,9 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy",
-    "pyaudio",
-    "torch",
-    "torchaudio",
-    "alicepi-proto @ ../proto_defs",
+    "alicepi-proto",
+    "numpy>=1.26.0",
+    "packaging>=25.0",
+    "pyaudio>=0.2.14",
+    "torch>=2.2.0",
+    "torchaudio>=2.9.1",
 ]
+
+[tool.uv.sources]
+alicepi-proto = { path = "../proto_defs", editable = true }
+
+[project.scripts]
+network-voice-input = "main:main"

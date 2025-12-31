@@ -16,7 +16,7 @@ class LLMClient:
             messages = [{"role": "system", "content": self.system_prompt}] + history
             
             payload = {
-                "model": "llama3", 
+                "model": "gemma3:270m", 
                 "messages": messages,
                 "stream": False
             }

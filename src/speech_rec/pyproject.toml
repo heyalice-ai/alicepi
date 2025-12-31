@@ -5,7 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "alicepi-proto",
     "faster-whisper==1.0.3",
     "numpy>=2.3.5",
-    "alicepi-proto @ ../proto_defs",
 ]
+
+[tool.uv.sources]
+alicepi-proto = { path = "../proto_defs" }

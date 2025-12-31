@@ -22,7 +22,7 @@ class AudioStreamServer:
         self.packet_queue = queue.Queue()
         self.thread = None
         self.framer = VadPacketFramer()
-        self.last_status = vad_pb2.Status.UNKNOWN
+        self.last_status = vad_pb2.VadPacket.Status.UNKNOWN
 
     def start(self):
         self.running = True
@@ -76,7 +76,7 @@ class AudioStreamServer:
                     payload_type = packet.WhichOneof("payload")
                     if payload_type == "status":
                         self.last_status = packet.status
-                        logger.debug(f"VAD status: {vad_pb2.Status.Name(packet.status)}")
+                        logger.debug(f"VAD status: {vad_pb2.VadPacket.Status.Name(packet.status)}")
                     if payload_type:
                         self.packet_queue.put(packet)
                 

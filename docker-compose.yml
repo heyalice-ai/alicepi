@@ -12,6 +12,8 @@ services:
       - SESSION_LOG_PATH=/app/logs/sessions.jsonl
     volumes:
       - ./logs:/app/logs
+    ports:
+      - "6000:6000" # Orchestrator Control Port
     depends_on:
       - voice-output
       - speech-rec
@@ -37,6 +39,13 @@ services:
       - SPEECH_REC_HOST=speech-rec
     devices:
       - "/dev/snd:/dev/snd"
+  network-voice-input:
+    build: ./src/network_voice_input
+    container_name: alice-voice-input
+    environment:
+      - SPEECH_REC_HOST=speech-rec
+    ports:
+      - "5558:5558" # voice input
 
   voice-output:
     build: ./src/voice_output

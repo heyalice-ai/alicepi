@@ -9,9 +9,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install dependencies using uv
-# We don't use --frozen here because we modified pyproject.toml
-RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --no-install-project
+
 
 # Copy source code and proto (proto is in ../proto_defs)
 # However, Docker build context is usually at service root.

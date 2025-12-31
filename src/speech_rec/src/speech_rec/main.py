@@ -42,7 +42,7 @@ class SpeechRecService:
         
         # State
         self.is_listening = False
-        self._last_vad_status = vad_pb2.Status.SILENCE
+        self._last_vad_status = vad_pb2.VadPacket.Status.SILENCE
 
     def start(self):
         self.running = True
@@ -188,9 +188,9 @@ class SpeechRecService:
         self.transcription_thread.start()
 
     def _handle_vad_status(self, status: int):
-        logger.debug(f"VAD status received: {vad_pb2.Status.Name(status)}")
+        logger.debug(f"VAD status received: {vad_pb2.VadPacket.Status.Name(status)}")
         # If we transitioned from silence to speech, drop any in-flight transcription and reset buffers
-        if status == vad_pb2.Status.SPEECH_DETECTED and self._last_vad_status == vad_pb2.Status.SILENCE:
+        if status == vad_pb2.VadPacket.Status.SPEECH_DETECTED and self._last_vad_status == vad_pb2.VadPacket.Status.SILENCE:
             logger.info("New speech detected after silence; resetting transcription state")
             self.transcriber.reset()
             self.audio_server.clear_queue()
