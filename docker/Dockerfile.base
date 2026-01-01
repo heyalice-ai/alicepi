@@ -3,6 +3,7 @@ FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 WORKDIR /app
 
 # Install system dependencies
+# btop is just for development purposes
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
@@ -13,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libportaudio2 \
     alsa-utils \
     build-essential \
+    btop \
     && rm -rf /var/lib/apt/lists/*
 
 # Enable bytecode compilation and configure the shared virtual environment
