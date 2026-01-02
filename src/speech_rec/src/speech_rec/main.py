@@ -170,6 +170,14 @@ class SpeechRecService:
     def _maybe_start_transcription(self):
         if self.transcription_thread and self.transcription_thread.is_alive():
             return
+        logger.info("Starting new transcription task")
+        logger.info("self.transcription_thread is: {} (alive? {})".format(
+            self.transcription_thread,
+            self.transcription_thread.is_alive() if self.transcription_thread else "N/A"
+        ))
+        logger.info("self.transcription_cancel is set? {}".format(
+            self.transcription_cancel.is_set()
+        ))
 
         # Clear stale cancel flags from prior runs
         if self.transcription_cancel.is_set():
@@ -177,6 +185,7 @@ class SpeechRecService:
 
         def _worker():
             try:
+                logger.info("Starting transcription worker")
                 text = self.transcriber.transcribe(cancel_event=self.transcription_cancel)
                 if text and not self.transcription_cancel.is_set():
                     logger.info(f"Transcribed: {text}")
@@ -188,7 +197,7 @@ class SpeechRecService:
         self.transcription_thread.start()
 
     def _handle_vad_status(self, status: int):
-        logger.debug(f"VAD status received: {vad_pb2.VadPacket.Status.Name(status)}")
+        logger.info(f"VAD status received: {vad_pb2.VadPacket.Status.Name(status)}")
         # If we transitioned from silence to speech, drop any in-flight transcription and reset buffers
         if status == vad_pb2.VadPacket.Status.SPEECH_DETECTED and self._last_vad_status == vad_pb2.VadPacket.Status.SILENCE:
             logger.info("New speech detected after silence; resetting transcription state")

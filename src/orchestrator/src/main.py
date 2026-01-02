@@ -164,7 +164,8 @@ class Orchestrator:
 
     def _process_text(self, text):
         self.session.add_user_message(text)
-        
+        self.session.update_tts_end() 
+
         response_text = self.llm.call(self.session.history)
         
         self.state = State.SPEAKING

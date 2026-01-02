@@ -14,6 +14,11 @@ class AudioStreamer:
         self.lock = threading.Lock()
         self.thread = None
         self._addr = (config.SPEECH_REC_HOST, config.SPEECH_REC_AUDIO_PORT)
+        self._send_packets = 0
+        self._send_bytes = 0
+        self._drop_packets = 0
+        self._last_stats_log = time.monotonic()
+        self._last_drop_log = time.monotonic()
         
     def start(self):
         self.running = True
@@ -41,24 +46,47 @@ class AudioStreamer:
     def send_packet(self, packet):
         """Encode and send a single VadPacket."""
         payload = encode_packet(packet)
+        now = time.monotonic()
         with self.lock:
-            if self.socket:
+            if not self.socket:
+                self._drop_packets += 1
+                if now - self._last_drop_log >= 5:
+                    logger.warning(
+                        "Dropping VadPacket: no Speech Rec connection (dropped=%d)",
+                        self._drop_packets,
+                    )
+                    self._last_drop_log = now
+                return
+
+            try:
+                self.socket.sendall(payload)
+                self._send_packets += 1
+                self._send_bytes += len(payload)
+            except BrokenPipeError:
+                logger.warning("Speech Rec disconnected")
                 try:
-                    self.socket.sendall(payload)
-                except BrokenPipeError:
-                    logger.warning("Speech Rec disconnected")
-                    try:
-                        self.socket.close()
-                    except Exception:
-                        pass
-                    self.socket = None
-                except Exception as e:
-                    logger.error(f"Error sending data: {e}")
-                    try:
-                        self.socket.close()
-                    except Exception:
-                        pass
-                    self.socket = None
+                    self.socket.close()
+                except Exception:
+                    pass
+                self.socket = None
+            except Exception as e:
+                logger.error(f"Error sending data: {e}")
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+                self.socket = None
+
+        if now - self._last_stats_log >= 5:
+            logger.info(
+                "SR stream stats: sent_packets=%d sent_bytes=%d dropped=%d",
+                self._send_packets,
+                self._send_bytes,
+                self._drop_packets,
+            )
+            self._send_packets = 0
+            self._send_bytes = 0
+            self._last_stats_log = now
 
     def stop(self):
         self.running = False

@@ -28,7 +28,12 @@ class VADWrapper:
         """
         if not audio_chunk_bytes:
             return False
-            
+        if len(audio_chunk_bytes) % 2 != 0:
+            # Keep int16 alignment if a partial byte sneaks in.
+            audio_chunk_bytes = audio_chunk_bytes[:-1]
+            if not audio_chunk_bytes:
+                return False
+
         audio_int16 = np.frombuffer(audio_chunk_bytes, dtype=np.int16)
         audio_float32 = audio_int16.astype(np.float32) / 32768.0
         

@@ -92,6 +92,7 @@ class AudioTranscriber:
 
         # Simple threshold for demo: if buffer > 1 second
         if len(self.audio_buffer) < self.sample_rate * 1.0: 
+            logger.info("Not enough audio data to transcribe yet.")
             return
 
         # In a real VAD-based streaming setup, we'd wait for a VAD "speech end" signal 

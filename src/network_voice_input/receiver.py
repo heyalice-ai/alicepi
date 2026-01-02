@@ -15,6 +15,8 @@ class NetworkReceiver:
         self.client_socket = None
         self.running = False
         self.audio_queue = queue.Queue(maxsize=100)
+        self._chunk_bytes = config.CHUNK_SIZE * 2
+        self._buffer = bytearray()
         
     def start(self):
         self.running = True
@@ -32,25 +34,31 @@ class NetworkReceiver:
                     logger.error(f"Error accepting connection: {e}")
 
     def _handle_client(self, client_sock):
+        self._buffer.clear()
+        self.client_socket = client_sock
         with client_sock:
             while self.running:
                 try:
                     # We expect chunks of raw PCM
                     # audio_sender.py sends CHUNK * 2 bytes
-                    data = client_sock.recv(config.CHUNK_SIZE * 2)
+                    data = client_sock.recv(self._chunk_bytes)
                     if not data:
                         logger.info("Raw audio client disconnected")
                         break
-                    
-                    try:
-                        self.audio_queue.put(data, block=False)
-                    except queue.Full:
-                        # Drop old data if queue is full to avoid latency build-up
+
+                    self._buffer.extend(data)
+                    while len(self._buffer) >= self._chunk_bytes:
+                        chunk = bytes(self._buffer[:self._chunk_bytes])
+                        del self._buffer[:self._chunk_bytes]
                         try:
-                            self.audio_queue.get_nowait()
-                            self.audio_queue.put(data, block=False)
-                        except:
-                            pass
+                            self.audio_queue.put(chunk, block=False)
+                        except queue.Full:
+                            # Drop old data if queue is full to avoid latency build-up
+                            try:
+                                self.audio_queue.get_nowait()
+                                self.audio_queue.put(chunk, block=False)
+                            except Exception:
+                                pass
                 except Exception as e:
                     logger.error(f"Error receiving raw audio: {e}")
                     break

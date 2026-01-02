@@ -26,6 +26,14 @@ class VADWrapper:
         Process a chunk of audio bytes (PCM 16-bit).
         Returns boolean is_speech.
         """
+        if not audio_chunk_bytes:
+            return False
+        if len(audio_chunk_bytes) % 2 != 0:
+            # Keep int16 alignment if a partial byte sneaks in.
+            audio_chunk_bytes = audio_chunk_bytes[:-1]
+            if not audio_chunk_bytes:
+                return False
+
         # Convert bytes to numpy float32 array normalized to [-1, 1]
         # PyAudio gives int16 bytes
         audio_int16 = np.frombuffer(audio_chunk_bytes, dtype=np.int16)

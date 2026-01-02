@@ -20,9 +20,9 @@ BUTTONS_HOST = os.environ.get("BUTTONS_HOST", "buttons")
 BUTTONS_PORT = 5558
 
 # LLM Configuration
-LLM_API_URL = os.environ.get("LLM_API_URL", "http://spark7:11434/v1/chat/completions")
+LLM_API_URL = os.environ.get("LLM_API_URL", "http://ollama:11434/v1/chat/completions")
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "You are Alice, a helpful AI assistant for the AlicePi smart speaker. Keep your responses concise and friendly.")
-SESSION_TIMEOUT_SECONDS = 5.0
+SESSION_TIMEOUT_SECONDS = 60.0
 
 # Logging Configuration
 ENABLE_SESSION_LOGGING = os.environ.get("ENABLE_SESSION_LOGGING", "false").lower() == "true"
