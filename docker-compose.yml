@@ -8,6 +8,9 @@ services:
       - SPEECH_REC_HOST=speech-rec
       - BUTTONS_HOST=buttons
       - LLM_API_URL=http://ollama:11434/v1/chat/completions # Assuming ollama is reachable
+      - LLM_MODEL_NAME=qwen3:8b
+      # - LLM_MODEL_NAME=gemma3:270m
+      # - LLM_MODEL_NAME=glm4:9b
       - ENABLE_SESSION_LOGGING=true
       - SESSION_LOG_PATH=/app/logs/sessions.jsonl
     volumes:
