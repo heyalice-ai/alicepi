@@ -43,6 +43,7 @@ class SpeechRecService:
         # State
         self.is_listening = False
         self._last_vad_status = vad_pb2.VadPacket.Status.SILENCE
+        self._pending_transcription = False
 
     def start(self):
         self.running = True
@@ -121,9 +122,14 @@ class SpeechRecService:
         logger.info(f"Received command: {command}")
         if command == interfaces.CMD_START:
             self.is_listening = True
+            self._last_vad_status = vad_pb2.VadPacket.Status.SILENCE
+            self._pending_transcription = False
+            self.transcriber.reset()
+            self.audio_server.clear_queue()
             logger.info("Listening started")
         elif command == interfaces.CMD_STOP:
             self.is_listening = False
+            self._pending_transcription = True
             logger.info("Listening stopped")
         elif command == interfaces.CMD_RESET:
             self.is_listening = False
@@ -157,27 +163,29 @@ class SpeechRecService:
 
                 payload_type = packet.WhichOneof("payload")
                 if payload_type == "audio":
-                    self.transcriber.process_vad_packet(packet)
+                    if self.is_listening:
+                        self.transcriber.process_vad_packet(packet)
                 elif payload_type == "status":
                     self._handle_vad_status(packet.status)
             
-            # 2. Transcribe if listening
-            if self.is_listening:
+            # 2. Transcribe when an utterance is ready
+            if self._pending_transcription:
                 self._maybe_start_transcription()
             
             time.sleep(0.01)
 
     def _maybe_start_transcription(self):
+        if not self._pending_transcription:
+            return
         if self.transcription_thread and self.transcription_thread.is_alive():
             return
+
+        audio = self.transcriber.drain_audio()
+        self._pending_transcription = False
+        if audio is None:
+            return
+
         logger.info("Starting new transcription task")
-        logger.info("self.transcription_thread is: {} (alive? {})".format(
-            self.transcription_thread,
-            self.transcription_thread.is_alive() if self.transcription_thread else "N/A"
-        ))
-        logger.info("self.transcription_cancel is set? {}".format(
-            self.transcription_cancel.is_set()
-        ))
 
         # Clear stale cancel flags from prior runs
         if self.transcription_cancel.is_set():
@@ -186,7 +194,7 @@ class SpeechRecService:
         def _worker():
             try:
                 logger.info("Starting transcription worker")
-                text = self.transcriber.transcribe(cancel_event=self.transcription_cancel)
+                text = self.transcriber.transcribe(audio=audio, cancel_event=self.transcription_cancel)
                 if text and not self.transcription_cancel.is_set():
                     logger.info(f"Transcribed: {text}")
                     self._emit_text(text, is_final=True)  # Treating all as final for this simple chunks version
@@ -198,12 +206,17 @@ class SpeechRecService:
 
     def _handle_vad_status(self, status: int):
         logger.info(f"VAD status received: {vad_pb2.VadPacket.Status.Name(status)}")
-        # If we transitioned from silence to speech, drop any in-flight transcription and reset buffers
-        if status == vad_pb2.VadPacket.Status.SPEECH_DETECTED and self._last_vad_status == vad_pb2.VadPacket.Status.SILENCE:
-            logger.info("New speech detected after silence; resetting transcription state")
-            self.transcriber.reset()
-            self.audio_server.clear_queue()
-            self._cancel_transcription()
+        if not self.is_listening:
+            self._last_vad_status = status
+            return
+
+        was_speaking = self._last_vad_status in (
+            vad_pb2.VadPacket.Status.SPEECH_DETECTED,
+            vad_pb2.VadPacket.Status.SPEECH_HANGOVER,
+        )
+        if was_speaking and status == vad_pb2.VadPacket.Status.SILENCE:
+            logger.info("Speech ended; scheduling transcription")
+            self._pending_transcription = True
 
         self._last_vad_status = status
 

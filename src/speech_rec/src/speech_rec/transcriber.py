@@ -24,6 +24,7 @@ class AudioTranscriber:
         
         # Buffer for accumulating audio chunks until we have enough for a segment
         self.audio_buffer = np.array([], dtype=np.float32)
+        self._buffer_lock = threading.Lock()
         
         # Confg
         self.sample_rate = 16000 # Whisper expects 16k
@@ -56,7 +57,19 @@ class AudioTranscriber:
         # Convert to float32 and normalize
         float32_data = int16_data.astype(np.float32) / 32768.0
         
-        self.audio_buffer = np.concatenate((self.audio_buffer, float32_data))
+        with self._buffer_lock:
+            self.audio_buffer = np.concatenate((self.audio_buffer, float32_data))
+
+    def drain_audio(self, min_seconds: float = 0.0):
+        min_samples = int(self.sample_rate * min_seconds)
+        with self._buffer_lock:
+            if self.audio_buffer.size == 0:
+                return None
+            if min_samples > 0 and self.audio_buffer.size < min_samples:
+                return None
+            audio = self.audio_buffer.copy()
+            self.audio_buffer = np.array([], dtype=np.float32)
+        return audio
 
     def process_vad_packet(self, packet: vad_pb2.VadPacket):
         """Convert audio payloads from the VAD proto into the internal buffer."""
@@ -78,20 +91,17 @@ class AudioTranscriber:
 
         self.process_raw_bytes(audio.data)
 
-    def transcribe(self, cancel_event: Optional[threading.Event] = None):
-        """
-        Attempt to transcribe the current buffer.
-        Returns a generator yielding text segments.
-        This is a simplified implementation. Real real-time streaming with VAD-triggering is more complex.
-        For now, we will perform transcription on available buffer if it meets a minimum length.
-        """
+    def transcribe(self, audio=None, cancel_event: Optional[threading.Event] = None):
+        """Transcribe the provided audio or drain from buffer if audio is None."""
         if cancel_event and cancel_event.is_set():
             return
         if self.model is None:
             return
 
-        # Simple threshold for demo: if buffer > 1 second
-        if len(self.audio_buffer) < self.sample_rate * 1.0: 
+        if audio is None:
+            audio = self.drain_audio(min_seconds=1.0)
+
+        if audio is None or audio.size == 0:
             logger.info("Not enough audio data to transcribe yet.")
             return
 
@@ -103,7 +113,7 @@ class AudioTranscriber:
             return
 
         segments, info = self.model.transcribe(
-            self.audio_buffer,
+            audio,
             beam_size=5,
             language="en",
             vad_filter=True,  # faster-whisper has built-in Silero VAD
@@ -115,13 +125,9 @@ class AudioTranscriber:
                 return
             text_output.append(segment.text)
         
-        # Clear buffer after transcription (naive approach - potentially cutting off words)
-        # Improved approach: keep last N seconds or wait for Silence.
-        # However, for this task Step 1, this logic suffices to prove connectivity.
-        self.audio_buffer = np.array([], dtype=np.float32)
-        
         return " ".join(text_output).strip()
 
     def reset(self):
-        self.audio_buffer = np.array([], dtype=np.float32)
+        with self._buffer_lock:
+            self.audio_buffer = np.array([], dtype=np.float32)
         self._warned_sample_rate = False
