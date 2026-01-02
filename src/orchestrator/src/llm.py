@@ -9,6 +9,7 @@ class LLMClient:
     def __init__(self, api_url=None, system_prompt=None):
         self.api_url = api_url or config.LLM_API_URL
         self.system_prompt = system_prompt or config.SYSTEM_PROMPT
+        self.model_name = config.LLM_MODEL_NAME
 
     def call(self, history):
         """Call the configured LLM API using chat completions format."""
@@ -16,7 +17,7 @@ class LLMClient:
             messages = [{"role": "system", "content": self.system_prompt}] + history
             
             payload = {
-                "model": "gemma3:270m", 
+                "model": self.model_name, 
                 "messages": messages,
                 "stream": False
             }

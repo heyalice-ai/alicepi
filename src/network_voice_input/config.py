@@ -7,7 +7,7 @@ CHUNK_SIZE = 512
 
 # VAD Configuration
 VAD_THRESHOLD = 0.5
-SILENCE_DURATION_MS = 500  # Hangover duration
+SILENCE_DURATION_MS = 2000  # Hangover duration
 
 # Networking Configuration
 HOST = "0.0.0.0"
