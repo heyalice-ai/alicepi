@@ -25,6 +25,38 @@ The project uses Docker for containerization and microservices isolation.
 *   Docker & Docker Compose
 *   Raspberry Pi 4 or 5 (target hardware)
 
+### Building and Running
+1. Make sure you have Docker installed on your Raspberry Pi 5.
+When using raspbian, you can install it via:
+    ```bash
+    sudo apt-get update
+    sudo apt-get install docker.io docker-cli docker-compose
+    ```
+2. Clone the repository:
+    ```bash
+    git clone https://github.com/heyalice-ai/alicepi.git
+    cd alicepi
+    ```
+3. Start the services using Docker Compose:
+    ```bash
+    docker compose up orchestrator voice-input voice-output speech-rec
+    ```
+
+4. To bring down the services, run:
+    ```bash
+    docker compose down
+    ```
+
+If you want to make any changes to the codebase when developing, you can rebuild the images with:
+```bash
+docker compose build
+```
+
+Or directly using the --build flag when bringing up the services:
+```bash
+docker compose up --build orchestrator
+```
+
 ### Deployment
 
 *   **Container Registry**: GitHub Container Registry (GHCR).
