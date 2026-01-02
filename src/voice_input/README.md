@@ -18,8 +18,8 @@ Configuration is managed in `src/config.py`:
 - `CHUNK_SIZE`: Size of audio chunks to process (default: 512 samples)
 - `VAD_THRESHOLD`: Probability threshold for speech detection (default: 0.5)
 - `SILENCE_DURATION_MS`: Hangover duration - continues streaming for this many milliseconds after speech ends (default: 500ms)
-- `HOST`: Server bind address (default: "0.0.0.0")
-- `PORT`: Server port (default: 6000, can be set via `VOICE_INPUT_PORT` environment variable)
+- `SPEECH_REC_HOST`: Hostname for speech recognition (default: `speech-rec`)
+- `SPEECH_REC_AUDIO_PORT`: Port for speech recognition audio input (default: 5002)
 
 ## How It Works
 
@@ -39,7 +39,7 @@ This hangover mechanism is crucial for speech recognition quality because:
 
 ### Streaming
 
-Audio is streamed via TCP socket to connected clients (typically the Speech Recognition service). The service accepts one client connection at a time and sends raw PCM audio data when speech is detected (including the hangover period).
+Audio is streamed via TCP socket to the Speech Recognition service. The service connects to `speech_rec` and sends protobuf-encoded audio/status packets when speech is detected (including the hangover period).
 
 ## Usage
 

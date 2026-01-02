@@ -29,7 +29,9 @@ def main():
 
         logger.info("Network Voice Input Service Started")
         logger.info(f"Port 5558 -> Raw PCM Input")
-        logger.info(f"Port 6000 -> VadPacket Output")
+        logger.info(
+            f"VadPacket Output -> {config.SPEECH_REC_HOST}:{config.SPEECH_REC_AUDIO_PORT}"
+        )
         
         while True:
             chunk = receiver.read_chunk()

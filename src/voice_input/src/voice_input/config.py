@@ -10,6 +10,5 @@ VAD_THRESHOLD = 0.5
 SILENCE_DURATION_MS = 500  # Hangover duration: continue streaming for this many ms after speech ends
 
 # Networking Configuration
-# We bind to all interfaces to allow other containers to connect
-HOST = "0.0.0.0"
-PORT = int(os.environ.get("VOICE_INPUT_PORT", 6000))
+SPEECH_REC_HOST = os.environ.get("SPEECH_REC_HOST", "speech-rec")
+SPEECH_REC_AUDIO_PORT = int(os.environ.get("SPEECH_REC_AUDIO_PORT", 5002))

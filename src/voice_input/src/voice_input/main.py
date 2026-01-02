@@ -42,6 +42,9 @@ def main():
         streamer.start()
 
         logger.info("Voice Input Service Started")
+        logger.info(
+            f"VadPacket Output -> {config.SPEECH_REC_HOST}:{config.SPEECH_REC_AUDIO_PORT}"
+        )
         logger.info(f"VAD Hangover Duration: {config.SILENCE_DURATION_MS}ms")
         
         while True:

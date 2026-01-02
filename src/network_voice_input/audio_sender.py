@@ -74,10 +74,10 @@ class AudioSender:
 
             key = stdscr.getch()
 
-            if key == curses.KEY_UP and current_row > 0:
-                current_row -= 1
-            elif key == curses.KEY_DOWN and current_row < len(devices) - 1:
-                current_row += 1
+            if key == curses.KEY_UP:
+                current_row = (current_row - 1) % len(devices)
+            elif key == curses.KEY_DOWN:
+                current_row = (current_row + 1) % len(devices)
             elif key == curses.KEY_ENTER or key in [10, 13]:
                 return devices[current_row][0]
 

@@ -13,5 +13,6 @@ SILENCE_DURATION_MS = 500  # Hangover duration
 HOST = "0.0.0.0"
 # Port where we receive raw PCM from audio_sender.py
 NETWORK_INPUT_PORT = int(os.environ.get("NETWORK_INPUT_PORT", 5558))
-# Port where we stream VadPackets to speech_rec (drop-in for voice_input)
-VOICE_INPUT_PORT = int(os.environ.get("VOICE_INPUT_PORT", 6000))
+# Speech Rec audio input (VadPacket stream destination)
+SPEECH_REC_HOST = os.environ.get("SPEECH_REC_HOST", "speech-rec")
+SPEECH_REC_AUDIO_PORT = int(os.environ.get("SPEECH_REC_AUDIO_PORT", 5002))

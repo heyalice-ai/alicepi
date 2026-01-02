@@ -8,6 +8,7 @@ dependencies = [
     "alicepi-proto",
     "faster-whisper==1.0.3",
     "numpy>=2.3.5",
+    "requests>=2.32.5",
 ]
 
 [tool.uv.sources]

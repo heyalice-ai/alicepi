@@ -1,6 +1,7 @@
 import socket
 import logging
 import threading
+import time
 from . import config
 from alicepi_proto.vad import encode_packet
 
@@ -8,55 +9,65 @@ logger = logging.getLogger(__name__)
 
 class AudioStreamer:
     def __init__(self):
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((config.HOST, config.PORT))
-        self.server_socket.listen(1) # Allow 1 client (Speech Rec)
-        self.client_socket = None
+        self.socket = None
         self.running = False
         self.lock = threading.Lock()
+        self.thread = None
+        self._addr = (config.SPEECH_REC_HOST, config.SPEECH_REC_AUDIO_PORT)
         
     def start(self):
         self.running = True
-        logger.info(f"Streamer listening on {config.HOST}:{config.PORT}")
-        # Accept clients in a separate thread so we don't block the main audio loop
-        # although for simplicity, maybe we just want to accept one connection and that's it?
-        # The prompt says "Single Client Management" for another task (Audio Transcription Server).
-        # Here, let's just make a simple non-blocking accept or thread it.
-        threading.Thread(target=self._accept_loop, daemon=True).start()
+        logger.info(f"Streamer connecting to {self._addr[0]}:{self._addr[1]}")
+        self.thread = threading.Thread(target=self._connect_loop, daemon=True)
+        self.thread.start()
 
-    def _accept_loop(self):
+    def _connect_loop(self):
         while self.running:
-            try:
-                client, addr = self.server_socket.accept()
-                logger.info(f"Accepted connection from {addr}")
-                with self.lock:
-                    if self.client_socket:
-                        try:
-                            self.client_socket.close()
-                        except:
-                            pass
-                    self.client_socket = client
-            except Exception as e:
-                logger.error(f"Error accepting connection: {e}")
+            if self.socket is None:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    sock.connect(self._addr)
+                    sock.settimeout(None)
+                    with self.lock:
+                        self.socket = sock
+                    logger.info(f"Connected to Speech Rec at {self._addr}")
+                except Exception as e:
+                    logger.debug(f"Speech Rec connection pending: {e}")
+                    time.sleep(2)
+                    continue
+            time.sleep(1)
 
     def send_packet(self, packet):
         """Encode and send a single VadPacket."""
         payload = encode_packet(packet)
         with self.lock:
-            if self.client_socket:
+            if self.socket:
                 try:
-                    self.client_socket.sendall(payload)
+                    self.socket.sendall(payload)
                 except BrokenPipeError:
-                    logger.warning("Client disconnected")
-                    self.client_socket.close()
-                    self.client_socket = None
+                    logger.warning("Speech Rec disconnected")
+                    try:
+                        self.socket.close()
+                    except Exception:
+                        pass
+                    self.socket = None
                 except Exception as e:
                     logger.error(f"Error sending data: {e}")
-                    self.client_socket = None
+                    try:
+                        self.socket.close()
+                    except Exception:
+                        pass
+                    self.socket = None
 
     def stop(self):
         self.running = False
-        if self.client_socket:
-            self.client_socket.close()
-        self.server_socket.close()
+        if self.thread:
+            self.thread.join(timeout=1)
+        with self.lock:
+            if self.socket:
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+                self.socket = None
