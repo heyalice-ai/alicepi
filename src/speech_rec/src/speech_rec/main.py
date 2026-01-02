@@ -26,6 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SpeechRecService")
 
+SR_WHISPER_MODEL = os.environ.get("SR_WHISPER_MODEL", "tiny.en")  # Use tiny.en for speed
+
 class SpeechRecService:
     def __init__(self):
         self.running = False
@@ -33,7 +35,7 @@ class SpeechRecService:
         self.text_socket = None
         
         self.audio_server = AudioStreamServer(port=interfaces.SR_AUDIO_INPUT_PORT)
-        self.transcriber = AudioTranscriber(model_size="tiny.en") # Use tiny.en for speed
+        self.transcriber = AudioTranscriber(model_size=SR_WHISPER_MODEL)
         self.transcription_thread = None
         self.transcription_cancel = threading.Event()
         
