@@ -59,7 +59,10 @@ services:
       - "/dev/snd:/dev/snd"
 
   speech-rec:
-    build: ./src/speech_rec
+    build:
+      context: ./src/speech_rec
+      args:
+        SR_WHISPER_MODEL: "tiny.en,base.en,turbo.en" # Prefetch multiple models
     image: ghcr.io/heyalice-ai/alicepi-speech-rec
     container_name: alice-speech-rec
     ports:

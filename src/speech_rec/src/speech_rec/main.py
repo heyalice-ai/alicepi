@@ -26,7 +26,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SpeechRecService")
 
-SR_WHISPER_MODEL = os.environ.get("SR_WHISPER_MODEL", "tiny.en")  # Use tiny.en for speed
+def _select_whisper_model(model_spec: str) -> str:
+    # Allow comma-separated model lists for build-time prefetching.
+    models = [model.strip() for model in model_spec.split(",") if model.strip()]
+    return models[0] if models else "tiny.en"
+
+SR_WHISPER_MODEL = _select_whisper_model(os.environ.get("SR_WHISPER_MODEL", "tiny.en"))
 
 class SpeechRecService:
     def __init__(self):
