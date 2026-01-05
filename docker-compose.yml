@@ -41,6 +41,10 @@ services:
     privileged: true # Required for Microphone access
     environment:
       - SPEECH_REC_HOST=speech-rec
+      - AUDIO_CARD=hw:2,0
+      - SAMPLE_FORMAT=S32_LE
+      - CHANNELS=2
+      - RATE=48000
     devices:
       - "/dev/snd:/dev/snd"
   network-voice-input:
@@ -55,6 +59,8 @@ services:
     build: ./src/voice_output
     image: ghcr.io/heyalice-ai/alicepi-voice-output
     container_name: alice-voice-output
+    environment:
+      - PLAYBACK_DEVICE=plughw:CARD=sndrpigooglevoi,DEV=0
     privileged: true # Required for Speaker access
     devices:
       - "/dev/snd:/dev/snd"

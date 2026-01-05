@@ -18,11 +18,14 @@ ZMQ_SUB_TOPIC_CONTROL = os.environ.get("ZMQ_TOPIC_CONTROL", "voice_output_contro
 SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", 24000))
 CHANNELS = int(os.environ.get("CHANNELS", 1))
 DTYPE = 'int16' # Assumed PCM 16-bit
+PLAYBACK_DEVICE = os.environ.get("PLAYBACK_DEVICE")
 
 def main():
     logger.info("Starting Voice Output Service...")
     logger.info(f"Connecting to ZMQ at {ZMQ_PUB_URL}")
     logger.info(f"Audio Config: {SAMPLE_RATE}Hz, {CHANNELS}ch, {DTYPE}")
+    if PLAYBACK_DEVICE:
+        logger.info(f"Playback device: {PLAYBACK_DEVICE}")
 
     # ZMQ Setup
     ctx = zmq.Context()
@@ -38,7 +41,8 @@ def main():
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype=DTYPE,
-            blocksize=1024 # tuning might be needed
+            blocksize=1024, # tuning might be needed
+            device=PLAYBACK_DEVICE,
         )
         stream.start()
         logger.info("Audio stream started.")
