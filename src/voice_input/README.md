@@ -13,13 +13,20 @@ The Voice Input service captures raw audio from the microphone, performs Voice A
 
 Configuration is managed in `src/config.py`:
 
-- `SAMPLE_RATE`: Audio sample rate (default: 16000 Hz)
-- `CHANNELS`: Number of audio channels (default: 1, mono)
+- `STREAM_SAMPLE_RATE`: Output sample rate for VAD + speech-rec (default: 16000 Hz)
+- `STREAM_CHANNELS`: Output channel count (default: 1, mono)
 - `CHUNK_SIZE`: Size of audio chunks to process (default: 512 samples)
+- `AUDIO_CARD`: ALSA input device name or index (e.g., `hw:2,0`)
+- `SAMPLE_FORMAT`: Input sample format (`S16_LE`, `S24_LE`, `S32_LE`)
+- `RATE`: Input device sample rate (e.g., 48000)
+- `CHANNELS`: Input device channel count (e.g., 2)
 - `VAD_THRESHOLD`: Probability threshold for speech detection (default: 0.5)
 - `SILENCE_DURATION_MS`: Hangover duration - continues streaming for this many milliseconds after speech ends (default: 500ms)
 - `SPEECH_REC_HOST`: Hostname for speech recognition (default: `speech-rec`)
 - `SPEECH_REC_AUDIO_PORT`: Port for speech recognition audio input (default: 5002)
+
+Input audio is converted to the stream format (mono, `STREAM_SAMPLE_RATE`, int16)
+before VAD and streaming.
 
 ## How It Works
 
