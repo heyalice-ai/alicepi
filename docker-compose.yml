@@ -12,6 +12,7 @@ services:
       # - LLM_MODEL_NAME=gemma3:270m
       # - LLM_MODEL_NAME=glm4:9b
       - ENABLE_SESSION_LOGGING=true
+      - VIBEVOICE_WS_URL=ws://vibevoice:3000/stream
       - SESSION_LOG_PATH=/app/logs/sessions.jsonl
     volumes:
       - ./logs:/app/logs

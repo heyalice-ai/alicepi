@@ -1,5 +1,23 @@
 import os
 
+def _optional_int(env_var):
+    value = os.environ.get(env_var)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+def _optional_float(env_var, default):
+    value = os.environ.get(env_var)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
 # Orchestrator
 ORCHESTRATOR_QUEUE_SIZE = 10
 
@@ -80,6 +98,15 @@ When generating responses, always follow these guidelines:
 
 The user will now speak to you. Respond appropriately and helpfully.
 """)
+
+# VibeVoice Configuration
+VIBEVOICE_WS_URL = os.environ.get("VIBEVOICE_WS_URL", "ws://vibevoice:8000/stream")
+VIBEVOICE_CFG_SCALE = _optional_float("VIBEVOICE_CFG_SCALE", 1.5)
+VIBEVOICE_INFERENCE_STEPS = _optional_int("VIBEVOICE_INFERENCE_STEPS")
+VIBEVOICE_VOICE = os.environ.get("VIBEVOICE_VOICE")
+VIBEVOICE_CONNECT_TIMEOUT = _optional_float("VIBEVOICE_CONNECT_TIMEOUT", 10.0)
+VIBEVOICE_PING_INTERVAL = _optional_float("VIBEVOICE_PING_INTERVAL", 20.0)
+VIBEVOICE_PING_TIMEOUT = _optional_float("VIBEVOICE_PING_TIMEOUT", 20.0)
 SESSION_TIMEOUT_SECONDS = 60.0
 
 # Logging Configuration

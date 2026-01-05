@@ -5,6 +5,7 @@ import os
 import zmq
 import threading
 import json
+import re
 
 # Add src to path if needed
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,12 +16,14 @@ try:
     from src.llm import LLMClient
     from src.session import SessionManager
     from src.sr_client import SRClient
+    from src.vibevoice_client import VibeVoiceClient
 except ImportError:
     import config
     from state import State
     from llm import LLMClient
     from session import SessionManager
     from sr_client import SRClient
+    from vibevoice_client import VibeVoiceClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,17 +31,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Orchestrator")
 
+VOICE_OUTPUT_PATTERN = re.compile(
+    r"\[VOICE OUTPUT\](.*?)\[/VOICE OUTPUT\]", re.IGNORECASE | re.DOTALL
+)
+
 class Orchestrator:
     def __init__(self):
         self.running = False
         self.state = State.IDLE
         self.zmq_ctx = None
-        self.pub_socket = None
-        self.buttons_sub_socket = None
+        self.pub_socket: zmq.SyncSocket = None
+        self.buttons_sub_socket: zmq.SyncSocket = None
         
         # Delegated Responsibilities
         self.session = SessionManager()
         self.llm = LLMClient()
+        self.vibevoice = VibeVoiceClient()
         self.sr = SRClient(
             on_text_callback=self._handle_sr_text,
             on_connect_callback=self._on_sr_connect
@@ -162,6 +170,33 @@ class Orchestrator:
         except json.JSONDecodeError:
             logger.error(f"Failed to decode JSON from SR: {line}")
 
+    def _extract_voice_output(self, response_text):
+        matches = VOICE_OUTPUT_PATTERN.findall(response_text or "")
+        segments = [match.strip() for match in matches if match.strip()]
+        if segments:
+            return " ".join(segments)
+        return None
+
+    def _publish_audio_chunk(self, pcm_bytes):
+        if not self.pub_socket:
+            logger.warning("Voice output PUB socket is not ready.")
+            return
+        try:
+            self.pub_socket.send_multipart([
+                config.ZMQ_TOPIC_AUDIO.encode('utf-8'),
+                pcm_bytes
+            ])
+        except zmq.ZMQError as e:
+            logger.error(f"Failed to publish audio chunk: {e}")
+
+    def _stream_voice_output(self, voice_text):
+        if not voice_text:
+            return
+        try:
+            self.vibevoice.stream(voice_text, self._publish_audio_chunk)
+        except Exception as e:
+            logger.error(f"VibeVoice stream error: {e}")
+
     def _process_text(self, text):
         self.session.add_user_message(text)
         self.session.update_tts_end() 
@@ -172,20 +207,24 @@ class Orchestrator:
         
         if response_text:
             self.session.add_assistant_message(response_text)
-            
-            ctrl_msg = {
-                "type": "speak",
-                "text": response_text
-            }
-            logger.info(f"Processing complete. Response: '{response_text}'")
-            
-            self.pub_socket.send_multipart([
-                config.ZMQ_TOPIC_CONTROL.encode('utf-8'),
-                json.dumps(ctrl_msg).encode('utf-8')
-            ])
-            
-            # Simulate speaking delay
-            time.sleep(0.5)
+
+            voice_text = self._extract_voice_output(response_text)
+            if not voice_text:
+                logger.warning("LLM response missing [VOICE OUTPUT]; using raw response.")
+                voice_text = response_text.strip()
+
+            logger.info(f"Processing complete. Response length: {len(response_text)}")
+
+            if voice_text:
+                ctrl_msg = {
+                    "type": "speak",
+                    "text": voice_text
+                }
+                self.pub_socket.send_multipart([
+                    config.ZMQ_TOPIC_CONTROL.encode('utf-8'),
+                    json.dumps(ctrl_msg).encode('utf-8')
+                ])
+                self._stream_voice_output(voice_text)
             
         self.session.update_tts_end()
         self.state = State.LISTENING

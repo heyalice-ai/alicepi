@@ -7,6 +7,9 @@ import time
 import json
 import sys
 import os
+import asyncio
+
+import websockets
 
 # Adjust path to find orchestrator source
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
@@ -15,6 +18,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src'
 os.environ['SPEECH_REC_HOST'] = 'localhost'
 os.environ['BUTTONS_HOST'] = 'localhost'
 os.environ['VOICE_OUTPUT_HOST'] = 'localhost'
+os.environ['VIBEVOICE_WS_URL'] = 'ws://localhost:7779/stream'
 
 import config
 
@@ -95,11 +99,14 @@ def run_mock_voice_output(stop_event, response_count_event):
             if sub_socket.poll(100):
                 msg = sub_socket.recv_multipart()
                 topic = msg[0].decode()
-                payload = msg[1].decode() if len(msg) > 1 else ""
-                print(f"[Mock VO] Received on {topic}: {payload}")
-                if topic == config.ZMQ_TOPIC_CONTROL:
+                payload = msg[1] if len(msg) > 1 else b""
+                if topic == config.ZMQ_TOPIC_AUDIO:
+                    print(f"[Mock VO] Received audio bytes: {len(payload)}")
                     count += 1
                     response_count_event.set()
+                elif topic == config.ZMQ_TOPIC_CONTROL:
+                    decoded = payload.decode('utf-8', errors='replace')
+                    print(f"[Mock VO] Received control: {decoded}")
         except zmq.ZMQError:
             break
 
@@ -110,6 +117,19 @@ def run_mock_buttons(stop_event):
     pub_socket.bind(f"tcp://*:{config.BUTTONS_PORT}") 
     while not stop_event.is_set():
         time.sleep(0.1)
+
+async def _mock_vibevoice_handler(websocket, path):
+    await websocket.send(b"\x00\x00" * 480)
+    await websocket.send(b"\x01\x00" * 480)
+    await websocket.close()
+
+async def _run_vibevoice_server(stop_event):
+    async with websockets.serve(_mock_vibevoice_handler, "localhost", 7779):
+        while not stop_event.is_set():
+            await asyncio.sleep(0.1)
+
+def run_mock_vibevoice(stop_event):
+    asyncio.run(_run_vibevoice_server(stop_event))
 
 if __name__ == "__main__":
     # Test Setup
@@ -128,11 +148,13 @@ if __name__ == "__main__":
     t_sr = threading.Thread(target=run_mock_speech_rec, args=(stop_event, trigger_sr_event), daemon=True)
     t_vo = threading.Thread(target=run_mock_voice_output, args=(stop_event, response_received_event), daemon=True)
     t_btn = threading.Thread(target=run_mock_buttons, args=(stop_event,), daemon=True)
+    t_vv = threading.Thread(target=run_mock_vibevoice, args=(stop_event,), daemon=True)
     
     t_llm.start()
     t_sr.start()
     t_vo.start()
     t_btn.start()
+    t_vv.start()
     
     time.sleep(1) 
     
