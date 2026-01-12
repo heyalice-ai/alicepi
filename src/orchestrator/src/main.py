@@ -94,9 +94,9 @@ class Orchestrator:
         
         # Publisher for Voice Output
         self.pub_socket = self.zmq_ctx.socket(zmq.PUB)
-        bind_addr = f"tcp://0.0.0.0:{config.VOICE_OUTPUT_PORT}"
-        self.pub_socket.bind(bind_addr)
-        logger.info(f"ZMQ audio/control PUB bound to {bind_addr}")
+        connect_addr = f"tcp://{config.VOICE_OUTPUT_HOST}:{config.VOICE_OUTPUT_PORT}"
+        self.pub_socket.connect(connect_addr)
+        logger.info(f"ZMQ audio/control PUB connected to {connect_addr}")
 
         # Subscriber for Buttons
         self.buttons_sub_socket = self.zmq_ctx.socket(zmq.SUB)

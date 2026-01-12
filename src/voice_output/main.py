@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("voice_output")
 
 # Configuration
-ZMQ_PUB_URL = os.environ.get("ZMQ_PUB_URL", "tcp://localhost:5557") # We adhere to subscriber pattern, but usually we connect to a PUB
+ZMQ_PUB_URL = os.environ.get("ZMQ_PUB_URL", "tcp://0.0.0.0:5557") # Voice output owns the bind endpoint
 ZMQ_SUB_TOPIC_AUDIO = os.environ.get("ZMQ_TOPIC_AUDIO", "voice_output_audio")
 ZMQ_SUB_TOPIC_CONTROL = os.environ.get("ZMQ_TOPIC_CONTROL", "voice_output_control")
 
@@ -30,7 +30,7 @@ def main():
     # ZMQ Setup
     ctx = zmq.Context()
     socket = ctx.socket(zmq.SUB)
-    socket.connect(ZMQ_PUB_URL)
+    socket.bind(ZMQ_PUB_URL)
     socket.setsockopt_string(zmq.SUBSCRIBE, ZMQ_SUB_TOPIC_AUDIO)
     socket.setsockopt_string(zmq.SUBSCRIBE, ZMQ_SUB_TOPIC_CONTROL)
 
