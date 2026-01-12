@@ -214,8 +214,11 @@ class Orchestrator:
                 voice_text = response_text.strip()
 
             logger.info(f"Processing complete. Response length: {len(response_text)}")
+            logger.info(f"Voice output length: {len(voice_text)} characters.")
+            logger.info(f"(Full LLM Response): {response_text}")
 
             if voice_text:
+                logger.info(f"Streaming voice output. Length: {len(voice_text)} characters.")
                 ctrl_msg = {
                     "type": "speak",
                     "text": voice_text
