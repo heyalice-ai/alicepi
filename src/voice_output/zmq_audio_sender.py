@@ -7,6 +7,9 @@ import zmq
 
 
 DEFAULT_TOPIC = "voice_output_audio"
+DEFAULT_RATE = 48000
+DEFAULT_CHANNELS = 2
+DEFAULT_SAMPLE_WIDTH = 4
 
 
 def _convert_chunk(
@@ -14,13 +17,14 @@ def _convert_chunk(
     in_width,
     in_channels,
     in_rate,
+    target_width,
     target_channels,
     target_rate,
     rate_state,
 ):
-    if in_width != 2:
-        data = audioop.lin2lin(data, in_width, 2)
-        in_width = 2
+    if in_width != target_width:
+        data = audioop.lin2lin(data, in_width, target_width)
+        in_width = target_width
 
     if in_channels != target_channels:
         if in_channels == 2 and target_channels == 1:
@@ -64,14 +68,20 @@ def main():
     parser.add_argument(
         "--rate",
         type=int,
-        default=24000,
+        default=DEFAULT_RATE,
         help="Target sample rate (Hz).",
     )
     parser.add_argument(
         "--channels",
         type=int,
-        default=1,
+        default=DEFAULT_CHANNELS,
         help="Target channel count.",
+    )
+    parser.add_argument(
+        "--sample-width",
+        type=int,
+        default=DEFAULT_SAMPLE_WIDTH,
+        help="Target sample width in bytes (S32_LE = 4).",
     )
     parser.add_argument(
         "--chunk-frames",
@@ -107,6 +117,8 @@ def main():
         in_rate = wav_file.getframerate()
         in_width = wav_file.getsampwidth()
 
+        print(f"Input WAV: {in_rate}Hz, {in_channels}ch, {in_width * 8}bit")
+
         while True:
             chunk = wav_file.readframes(args.chunk_frames)
             if not chunk:
@@ -117,6 +129,7 @@ def main():
                 in_width,
                 in_channels,
                 in_rate,
+                args.sample_width,
                 args.channels,
                 args.rate,
                 rate_state,
@@ -128,7 +141,7 @@ def main():
             socket.send_multipart([topic_bytes, out_chunk])
 
             if not args.no_realtime:
-                frame_count = len(out_chunk) // (2 * args.channels)
+                frame_count = len(out_chunk) // (args.sample_width * args.channels)
                 time.sleep(frame_count / float(args.rate))
 
     socket.close(linger=0)
