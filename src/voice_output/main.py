@@ -15,15 +15,39 @@ ZMQ_PUB_URL = os.environ.get("ZMQ_PUB_URL", "tcp://0.0.0.0:5557") # Voice output
 ZMQ_SUB_TOPIC_AUDIO = os.environ.get("ZMQ_TOPIC_AUDIO", "voice_output_audio")
 ZMQ_SUB_TOPIC_CONTROL = os.environ.get("ZMQ_TOPIC_CONTROL", "voice_output_control")
 
-SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", 24000))
-CHANNELS = int(os.environ.get("CHANNELS", 1))
+SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", 48000))
+CHANNELS = int(os.environ.get("CHANNELS", 2))
+INPUT_CHANNELS = int(os.environ.get("INPUT_CHANNELS", CHANNELS))
 DTYPE = 'int16' # Assumed PCM 16-bit
 PLAYBACK_DEVICE = os.environ.get("PLAYBACK_DEVICE")
+
+
+def _convert_channels(payload, in_channels, out_channels):
+    if in_channels == out_channels:
+        return payload
+    bytes_per_sample = np.dtype(DTYPE).itemsize
+    frame_bytes = bytes_per_sample * in_channels
+    if frame_bytes <= 0:
+        return payload
+    frame_count = len(payload) // frame_bytes
+    if frame_count <= 0:
+        return b""
+    payload = payload[: frame_count * frame_bytes]
+    audio = np.frombuffer(payload, dtype=DTYPE).reshape(frame_count, in_channels)
+    if in_channels == 1 and out_channels == 2:
+        audio = np.repeat(audio, 2, axis=1)
+    elif in_channels == 2 and out_channels == 1:
+        audio = audio.mean(axis=1).astype(DTYPE)
+    else:
+        raise ValueError(f"Unsupported channel conversion: {in_channels} -> {out_channels}")
+    return audio.tobytes()
 
 def main():
     logger.info("Starting Voice Output Service...")
     logger.info(f"Connecting to ZMQ at {ZMQ_PUB_URL}")
     logger.info(f"Audio Config: {SAMPLE_RATE}Hz, {CHANNELS}ch, {DTYPE}")
+    if INPUT_CHANNELS != CHANNELS:
+        logger.info(f"Input channels: {INPUT_CHANNELS} (will convert to {CHANNELS})")
     if PLAYBACK_DEVICE:
         logger.info(f"Playback device: {PLAYBACK_DEVICE}")
 
@@ -61,6 +85,11 @@ def main():
 
             if topic == ZMQ_SUB_TOPIC_AUDIO:
                 # payload is raw PCM bytes
+                try:
+                    payload = _convert_channels(payload, INPUT_CHANNELS, CHANNELS)
+                except ValueError as e:
+                    logger.error(f"Audio channel conversion error: {e}")
+                    continue
                 if stream.active:
                     stream.write(payload)
                 else:
