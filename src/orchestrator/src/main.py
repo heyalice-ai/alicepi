@@ -59,10 +59,10 @@ class Orchestrator:
         
         if config.ORCHESTRATOR_MODE == "cloud":
             logger.info("Initializing Cloud Engine")
-            self.engine = CloudEngine()
+            self.engine = CloudEngine(session_manager=self.session)
         else:
             logger.info("Initializing Local Engine")
-            self.engine = LocalEngine()
+            self.engine = LocalEngine(session_manager=self.session)
 
         self.sr = SRClient(
             on_text_callback=self._handle_sr_text,

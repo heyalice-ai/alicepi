@@ -2,6 +2,7 @@ import os
 import time
 import json
 import logging
+import uuid
 from . import config
 
 logger = logging.getLogger("Orchestrator.Session")
@@ -10,6 +11,8 @@ class SessionManager:
     def __init__(self):
         self.history = []
         self.last_tts_end_time = 0
+        self.uuid = uuid.uuid4().hex
+
 
     def add_user_message(self, text):
         self.history.append({"role": "user", "content": text})
@@ -24,6 +27,7 @@ class SessionManager:
             logger.info("Session timed out. Logging and clearing history.")
             self.log_session()
             self.history = []
+            self.uuid = uuid.uuid4().hex
             return True
         return False
 
@@ -36,6 +40,7 @@ class SessionManager:
             os.makedirs(os.path.dirname(config.SESSION_LOG_PATH), exist_ok=True)
             session_data = {
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "uuid": self.uuid,
                 "history": self.history
             }
             with open(config.SESSION_LOG_PATH, "a") as f:

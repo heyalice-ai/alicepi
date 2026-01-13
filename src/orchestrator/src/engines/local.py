@@ -1,6 +1,7 @@
 import logging
 import re
 from typing import Callable, List, Dict
+from orchestrator.src.session import SessionManager
 from src.llm import LLMClient
 from src.vibevoice_client import VibeVoiceClient
 from .base import BaseEngine
@@ -12,7 +13,8 @@ VOICE_OUTPUT_PATTERN = re.compile(
 )
 
 class LocalEngine(BaseEngine):
-    def __init__(self):
+    def __init__(self, session_manager: SessionManager):
+        self.session_manager = session_manager
         self.llm = LLMClient()
         self.vibevoice = VibeVoiceClient()
 

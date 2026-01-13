@@ -2,6 +2,7 @@ import logging
 import requests
 import io
 from typing import Callable, List, Dict
+from orchestrator.src.session import SessionManager
 from pydub import AudioSegment
 from .base import BaseEngine
 from src import config
@@ -9,12 +10,13 @@ from src import config
 logger = logging.getLogger("Orchestrator.CloudEngine")
 
 class CloudEngine(BaseEngine):
-    def __init__(self):
+    def __init__(self, session_manager: SessionManager):
+        self.session_manager = session_manager
         self.api_url = config.CLOUD_API_URL
         self.voice_id = config.CLOUD_VOICE_ID
         self.tenant_id = config.CLOUD_TENANT_ID
 
-    def process(self, text: str, history: List[Dict[str, str]], on_audio_chunk: Callable[[bytes], None]) -> str:
+    def process(self, text: str, history: List[Dict[str, str]], on_audio_chunk: Callable[[bytes, int, int, str], None]) -> str:
         """
         Calls the cloud API with the user's text.
         The API returns an MP3 stream.
@@ -23,6 +25,7 @@ class CloudEngine(BaseEngine):
         payload = {
             "query": text,
             "voiceId": self.voice_id,
+            "conversationId": self.session_manager.uuid
         }
         if self.tenant_id:
             payload["tenantId"] = self.tenant_id
