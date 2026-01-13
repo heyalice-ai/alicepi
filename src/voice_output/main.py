@@ -20,7 +20,8 @@ SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", 48000))
 INPUT_RATE = int(os.environ.get("INPUT_RATE", SAMPLE_RATE))
 CHANNELS = int(os.environ.get("CHANNELS", 2))
 INPUT_CHANNELS = int(os.environ.get("INPUT_CHANNELS", CHANNELS))
-DTYPE = 'int32' # Assumed PCM 32-bit
+DTYPE = os.environ.get("DTYPE", "int32") # Assumed PCM output
+INPUT_DTYPE = os.environ.get("INPUT_DTYPE", DTYPE)
 PLAYBACK_DEVICE = os.environ.get("PLAYBACK_DEVICE")
 
 
@@ -43,6 +44,23 @@ def _convert_channels(payload, in_channels, out_channels):
     else:
         raise ValueError(f"Unsupported channel conversion: {in_channels} -> {out_channels}")
     return audio.tobytes()
+
+
+def _convert_dtype(payload, input_dtype, output_dtype):
+    if input_dtype == output_dtype:
+        return payload
+    in_dtype = np.dtype(input_dtype)
+    out_dtype = np.dtype(output_dtype)
+    if in_dtype.kind != "i" or out_dtype.kind != "i":
+        raise ValueError(f"Unsupported dtype conversion: {input_dtype} -> {output_dtype}")
+    audio = np.frombuffer(payload, dtype=in_dtype)
+    if in_dtype.itemsize == 2 and out_dtype.itemsize == 4:
+        audio = (audio.astype(np.int32) << 16)
+    elif in_dtype.itemsize == 4 and out_dtype.itemsize == 2:
+        audio = (audio.astype(np.int32) >> 16).clip(-32768, 32767).astype(np.int16)
+    else:
+        audio = audio.astype(out_dtype)
+    return audio.astype(out_dtype).tobytes()
 
 
 def _resample(payload, channels, input_rate, output_rate, rate_state):
@@ -73,6 +91,8 @@ def main():
         logger.info(f"Input rate: {INPUT_RATE}Hz (will resample to {SAMPLE_RATE}Hz)")
     if INPUT_CHANNELS != CHANNELS:
         logger.info(f"Input channels: {INPUT_CHANNELS} (will convert to {CHANNELS})")
+    if INPUT_DTYPE != DTYPE:
+        logger.info(f"Input dtype: {INPUT_DTYPE} (will convert to {DTYPE})")
     if PLAYBACK_DEVICE:
         logger.info(f"Playback device: {PLAYBACK_DEVICE}")
 
@@ -116,6 +136,7 @@ def main():
                         payload, INPUT_CHANNELS, INPUT_RATE, SAMPLE_RATE, rate_state
                     )
                     payload = _convert_channels(payload, INPUT_CHANNELS, CHANNELS)
+                    payload = _convert_dtype(payload, INPUT_DTYPE, DTYPE)
                 except ValueError as e:
                     logger.error(f"Audio channel conversion error: {e}")
                     continue
