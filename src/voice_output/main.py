@@ -18,7 +18,7 @@ ZMQ_SUB_TOPIC_CONTROL = os.environ.get("ZMQ_TOPIC_CONTROL", "voice_output_contro
 SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", 48000))
 CHANNELS = int(os.environ.get("CHANNELS", 2))
 INPUT_CHANNELS = int(os.environ.get("INPUT_CHANNELS", CHANNELS))
-DTYPE = 'int16' # Assumed PCM 16-bit
+DTYPE = 'int32' # Assumed PCM 32-bit
 PLAYBACK_DEVICE = os.environ.get("PLAYBACK_DEVICE")
 
 
