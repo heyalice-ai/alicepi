@@ -109,6 +109,20 @@ VIBEVOICE_PING_INTERVAL = _optional_float("VIBEVOICE_PING_INTERVAL", 20.0)
 VIBEVOICE_PING_TIMEOUT = _optional_float("VIBEVOICE_PING_TIMEOUT", 20.0)
 SESSION_TIMEOUT_SECONDS = 60.0
 
+# Cloud API Configuration
+CLOUD_API_URL = os.environ.get("CLOUD_API_URL", "http://localhost:8080/api/voice/chat")
+CLOUD_VOICE_ID = os.environ.get("CLOUD_VOICE_ID", "af_alloy")
+CLOUD_TENANT_ID = os.environ.get("CLOUD_TENANT_ID", "alice")
+
+# Orchestrator Mode
+# Mode can be 'local' or 'cloud'
+ORCHESTRATOR_MODE = os.environ.get("ORCHESTRATOR_MODE", "local").lower()
+
+# Target Audio Format
+TARGET_SAMPLE_RATE = 48000
+TARGET_CHANNELS = 2
+TARGET_DTYPE = "int32"
+
 # Logging Configuration
 ENABLE_SESSION_LOGGING = os.environ.get("ENABLE_SESSION_LOGGING", "false").lower() == "true"
 SESSION_LOG_PATH = os.environ.get("SESSION_LOG_PATH", "/app/logs/sessions.jsonl")

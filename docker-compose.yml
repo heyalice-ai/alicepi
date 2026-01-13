@@ -14,6 +14,9 @@ services:
       - ENABLE_SESSION_LOGGING=true
       - VIBEVOICE_WS_URL=ws://vibevoice:3000/stream
       - SESSION_LOG_PATH=/app/logs/sessions.jsonl
+      - CLOUD_API_URL=https://voice-service.staging.empathy.co/api/voice/chat
+      - CLOUD_VOICE_ID=af_alloy
+      - ORCHESTRATOR_MODE=cloud
     volumes:
       - ./logs:/app/logs
     ports:
