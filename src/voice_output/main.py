@@ -5,6 +5,7 @@ import sounddevice as sd
 import numpy as np
 import json
 import logging
+import audioop
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -16,6 +17,7 @@ ZMQ_SUB_TOPIC_AUDIO = os.environ.get("ZMQ_TOPIC_AUDIO", "voice_output_audio")
 ZMQ_SUB_TOPIC_CONTROL = os.environ.get("ZMQ_TOPIC_CONTROL", "voice_output_control")
 
 SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", 48000))
+INPUT_RATE = int(os.environ.get("INPUT_RATE", SAMPLE_RATE))
 CHANNELS = int(os.environ.get("CHANNELS", 2))
 INPUT_CHANNELS = int(os.environ.get("INPUT_CHANNELS", CHANNELS))
 DTYPE = 'int32' # Assumed PCM 32-bit
@@ -42,10 +44,33 @@ def _convert_channels(payload, in_channels, out_channels):
         raise ValueError(f"Unsupported channel conversion: {in_channels} -> {out_channels}")
     return audio.tobytes()
 
+
+def _resample(payload, channels, input_rate, output_rate, rate_state):
+    if input_rate == output_rate:
+        return payload, rate_state
+    bytes_per_sample = np.dtype(DTYPE).itemsize
+    frame_bytes = bytes_per_sample * channels
+    if frame_bytes <= 0:
+        return payload, rate_state
+    frame_count = len(payload) // frame_bytes
+    if frame_count <= 0:
+        return b"", rate_state
+    payload = payload[: frame_count * frame_bytes]
+    return audioop.ratecv(
+        payload,
+        bytes_per_sample,
+        channels,
+        input_rate,
+        output_rate,
+        rate_state,
+    )
+
 def main():
     logger.info("Starting Voice Output Service...")
     logger.info(f"Connecting to ZMQ at {ZMQ_PUB_URL}")
     logger.info(f"Audio Config: {SAMPLE_RATE}Hz, {CHANNELS}ch, {DTYPE}")
+    if INPUT_RATE != SAMPLE_RATE:
+        logger.info(f"Input rate: {INPUT_RATE}Hz (will resample to {SAMPLE_RATE}Hz)")
     if INPUT_CHANNELS != CHANNELS:
         logger.info(f"Input channels: {INPUT_CHANNELS} (will convert to {CHANNELS})")
     if PLAYBACK_DEVICE:
@@ -75,6 +100,7 @@ def main():
         sys.exit(1)
 
     try:
+        rate_state = None
         while True:
             # Receive multipart: [topic, payload]
             try:
@@ -86,6 +112,9 @@ def main():
             if topic == ZMQ_SUB_TOPIC_AUDIO:
                 # payload is raw PCM bytes
                 try:
+                    payload, rate_state = _resample(
+                        payload, INPUT_CHANNELS, INPUT_RATE, SAMPLE_RATE, rate_state
+                    )
                     payload = _convert_channels(payload, INPUT_CHANNELS, CHANNELS)
                 except ValueError as e:
                     logger.error(f"Audio channel conversion error: {e}")
