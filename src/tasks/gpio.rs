@@ -33,8 +33,8 @@ pub async fn run(
             }
         };
 
-        let mut button = match config.button_pin {
-            Some(pin) => match gpio.get(pin).and_then(|p| p.into_input_pullup()) {
+        let mut button: Option<rppal::gpio::InputPin> = match config.button_pin {
+            Some(pin) => match gpio.get(pin).map(|p| p.into_input_pullup()) {
                 Ok(pin) => Some(pin),
                 Err(err) => {
                     tracing::warn!("failed to init button pin {}: {}", pin, err);
@@ -44,8 +44,8 @@ pub async fn run(
             None => None,
         };
 
-        let mut lid = match config.lid_pin {
-            Some(pin) => match gpio.get(pin).and_then(|p| p.into_input_pullup()) {
+        let mut lid: Option<rppal::gpio::InputPin> = match config.lid_pin {
+            Some(pin) => match gpio.get(pin).map(|p| p.into_input_pullup()) {
                 Ok(pin) => Some(pin),
                 Err(err) => {
                     tracing::warn!("failed to init lid pin {}: {}", pin, err);

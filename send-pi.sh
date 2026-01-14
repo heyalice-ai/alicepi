@@ -46,6 +46,7 @@ if [ -e "${SYSROOT}/usr/lib64/libatomic.so.1" ] && [ ! -e "${SYSROOT}/usr/lib64/
 fi
 
 
+# cargo build --features=gpio --profile=${PROFILE} --target ${ARCH} "$@"
 cargo build --profile=${PROFILE} --target ${ARCH} "$@"
 
 rsync -rvpP ./target/${ARCH}/${PROFILE}/alicepi alicedev1:alicepi/alicepi-static
