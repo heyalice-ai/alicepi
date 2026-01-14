@@ -42,6 +42,18 @@ pub enum SpeechRecEvent {
 }
 
 #[derive(Debug, Clone)]
+pub enum AudioOutput {
+    Pcm {
+        data: Vec<u8>,
+        sample_rate: u32,
+        channels: u16,
+    },
+    Mp3 {
+        data: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub enum VoiceInputCommand {
     StartListening,
     StopListening,
@@ -61,6 +73,7 @@ pub enum SpeechRecCommand {
 pub enum VoiceOutputCommand {
     PlayText { text: String },
     PlayAudioFile { path: String },
+    PlayAudio { audio: AudioOutput },
     Stop,
     Shutdown,
 }

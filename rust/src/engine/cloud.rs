@@ -1,0 +1,102 @@
+use std::time::Duration;
+
+use async_trait::async_trait;
+use reqwest::header::ACCEPT;
+use serde::Serialize;
+
+use crate::engine::{
+    env_duration_seconds, env_optional_string, env_string, Engine, EngineError, EngineRequest,
+    EngineResponse,
+};
+use crate::protocol::AudioOutput;
+
+#[derive(Debug, Clone)]
+pub struct CloudEngineConfig {
+    pub api_url: String,
+    pub voice_id: String,
+    pub tenant_id: Option<String>,
+    pub timeout: Duration,
+}
+
+impl CloudEngineConfig {
+    pub fn from_env() -> Self {
+        Self {
+            api_url: env_string("CLOUD_API_URL", "http://localhost:8080/api/voice/chat"),
+            voice_id: env_string("CLOUD_VOICE_ID", "af_alloy"),
+            tenant_id: env_optional_string("CLOUD_TENANT_ID"),
+            timeout: env_duration_seconds("CLOUD_TIMEOUT_SECONDS", 30.0),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CloudEngine {
+    client: reqwest::Client,
+    config: CloudEngineConfig,
+}
+
+impl CloudEngine {
+    pub fn new(config: CloudEngineConfig) -> Result<Self, EngineError> {
+        let client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .build()
+            .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
+        Ok(Self { client, config })
+    }
+}
+
+#[async_trait]
+impl Engine for CloudEngine {
+    async fn process(&self, request: EngineRequest<'_>) -> Result<EngineResponse, EngineError> {
+        let payload = CloudRequest {
+            query: request.text,
+            voice_id: &self.config.voice_id,
+            conversation_id: request.session_id,
+            tenant_id: self.config.tenant_id.as_deref(),
+        };
+
+        let response = self
+            .client
+            .post(&self.config.api_url)
+            .header(ACCEPT, "audio/mpeg")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
+
+        let response = response
+            .error_for_status()
+            .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
+
+        if bytes.is_empty() {
+            return Err(EngineError::CloudRequest(
+                "cloud response returned empty audio".to_string(),
+            ));
+        }
+
+        Ok(EngineResponse {
+            assistant_text: None,
+            audio: AudioOutput::Mp3 {
+                data: bytes.to_vec(),
+            },
+        })
+    }
+
+}
+
+#[derive(Debug, Serialize)]
+struct CloudRequest<'a> {
+    #[serde(rename = "query")]
+    query: &'a str,
+    #[serde(rename = "voiceId")]
+    voice_id: &'a str,
+    #[serde(rename = "conversationId")]
+    conversation_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "tenantId")]
+    tenant_id: Option<&'a str>,
+}

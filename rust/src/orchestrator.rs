@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,8 +8,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::config::ServerConfig;
+use crate::engine::{build_engine, Engine, EngineConfig, EngineError, EngineRequest, EngineResponse, SessionManager};
 use crate::protocol::{
-    ClientCommand, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot, VoiceInputCommand, VoiceInputEvent, VoiceOutputCommand
+    ClientCommand, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot, VoiceInputCommand,
+    VoiceInputEvent, VoiceOutputCommand,
 };
 use crate::tasks;
 use crate::watchdog::{self, CommandHandle};
@@ -21,12 +24,14 @@ enum State {
     Speaking,
 }
 
-#[derive(Debug)]
 struct Orchestrator {
     state: State,
     mic_muted: bool,
     lid_open: bool,
     generation: Arc<AtomicU64>,
+    engine: Arc<dyn Engine>,
+    session: SessionManager,
+    session_timeout: Duration,
     voice_input: CommandHandle<VoiceInputCommand>,
     speech_rec: CommandHandle<SpeechRecCommand>,
     voice_output: CommandHandle<VoiceOutputCommand>,
@@ -36,11 +41,16 @@ struct Orchestrator {
 
 #[derive(Debug)]
 enum OrchestratorEvent {
-    EngineResponse { generation: u64, response: String },
+    EngineResponse {
+        generation: u64,
+        result: Result<EngineResponse, EngineError>,
+    },
 }
 
 impl Orchestrator {
     fn new(
+        engine: Arc<dyn Engine>,
+        session_timeout: Duration,
         voice_input: CommandHandle<VoiceInputCommand>,
         speech_rec: CommandHandle<SpeechRecCommand>,
         voice_output: CommandHandle<VoiceOutputCommand>,
@@ -52,6 +62,9 @@ impl Orchestrator {
             mic_muted: true,
             lid_open: true,
             generation: Arc::new(AtomicU64::new(0)),
+            engine,
+            session: SessionManager::new(),
+            session_timeout,
             voice_input,
             speech_rec,
             voice_output,
@@ -135,15 +148,13 @@ impl Orchestrator {
             }
             ClientCommand::LidOpen => {
                 self.set_lid_open(true);
+                self.session.start_new();
             }
             ClientCommand::LidClose => {
                 self.set_lid_open(false);
-                #[cfg(feature = "lid_control")]
-                {
-                    self.cancel_session().await;
-                    self.set_mic_muted(true);
-                    self.set_state(State::Idle);
-                }
+                self.cancel_session().await;
+                self.set_mic_muted(true);
+                self.set_state(State::Idle);
             }
         }
     }
@@ -188,13 +199,27 @@ impl Orchestrator {
 
     async fn handle_internal_event(&mut self, event: OrchestratorEvent) {
         match event {
-            OrchestratorEvent::EngineResponse { generation, response } => {
+            OrchestratorEvent::EngineResponse { generation, result } => {
                 if self.generation.load(Ordering::SeqCst) == generation {
-                    self.set_state(State::Speaking);
-                    let _ = self
-                        .voice_output
-                        .send(VoiceOutputCommand::PlayText { text: response })
-                        .await;
+                    match result {
+                        Ok(response) => {
+                            if let Some(text) = response.assistant_text {
+                                self.session.add_assistant_message(text);
+                            } else {
+                                self.session.add_assistant_placeholder();
+                            }
+
+                            self.set_state(State::Speaking);
+                            let _ = self
+                                .voice_output
+                                .send(VoiceOutputCommand::PlayAudio { audio: response.audio })
+                                .await;
+                        }
+                        Err(err) => {
+                            tracing::warn!("engine request failed: {}", err);
+                            self.set_state(State::Idle);
+                        }
+                    }
                 } else {
                     tracing::info!("dropping stale engine response");
                 }
@@ -203,19 +228,31 @@ impl Orchestrator {
     }
 
     async fn process_text(&mut self, text: String) {
-        if cfg!(feature = "lid_control") && !self.lid_open {
+        if !self.lid_open {
             tracing::info!("lid closed; ignoring text input");
             return;
         }
 
+        if self.session.maybe_rollover(self.session_timeout) {
+            tracing::info!("session timed out; starting new session");
+        }
+
+        self.session.add_user_message(&text);
         self.set_state(State::Processing);
         let generation = self.generation.load(Ordering::SeqCst);
         let tx = self.internal_tx.clone();
+        let engine = self.engine.clone();
+        let history = self.session.history().to_vec();
+        let session_id = self.session.id().to_string();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let response = format!("You said: {}", text.trim());
+            let request = EngineRequest {
+                text: &text,
+                history: &history,
+                session_id: &session_id,
+            };
+            let result = engine.process(request).await;
             let _ = tx
-                .send(OrchestratorEvent::EngineResponse { generation, response })
+                .send(OrchestratorEvent::EngineResponse { generation, result })
                 .await;
         });
     }
@@ -341,7 +378,12 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
     tokio::spawn(gpio_task);
     tokio::spawn(server_task);
 
+    let engine = build_engine(EngineConfig::from_env())
+        .map_err(|err| format!("engine init failed: {}", err))?;
+    let session_timeout = session_timeout_from_env();
     let mut orchestrator = Orchestrator::new(
+        engine,
+        session_timeout,
         voice_input_handle,
         speech_rec_handle,
         voice_output_handle,
@@ -360,6 +402,14 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
         .await;
 
     Ok(())
+}
+
+fn session_timeout_from_env() -> Duration {
+    let value = env::var("SESSION_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(60.0);
+    Duration::from_secs_f32(value.max(0.0))
 }
 
 async fn tcp_server(

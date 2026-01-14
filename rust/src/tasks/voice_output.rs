@@ -1,13 +1,14 @@
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use rodio::source::SineWave;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::buffer::SamplesBuffer;
 use tokio::sync::{mpsc, watch};
 
-use crate::protocol::VoiceOutputCommand;
+use crate::protocol::{AudioOutput, VoiceOutputCommand};
 
 pub async fn run(mut rx: mpsc::Receiver<VoiceOutputCommand>, mut shutdown: watch::Receiver<bool>) {
     let (tx, thread_rx) = std_mpsc::channel();
@@ -66,6 +67,18 @@ fn output_loop(rx: std_mpsc::Receiver<VoiceOutputCommand>) {
                     }
                 }
             }
+            VoiceOutputCommand::PlayAudio { audio } => {
+                stop_sink(&mut current_sink);
+                match play_audio(&handle, audio) {
+                    Ok(sink) => {
+                        current_sink = Some(sink);
+                        tracing::info!("voice output: audio buffer");
+                    }
+                    Err(err) => {
+                        tracing::warn!("voice output failed to play buffer: {}", err);
+                    }
+                }
+            }
             VoiceOutputCommand::Stop => {
                 stop_sink(&mut current_sink);
                 tracing::info!("voice output stop");
@@ -86,6 +99,39 @@ fn play_audio_file(handle: &OutputStreamHandle, path: &str) -> Result<Sink, Stri
     sink.append(decoder);
     sink.play();
     Ok(sink)
+}
+
+fn play_audio(handle: &OutputStreamHandle, audio: AudioOutput) -> Result<Sink, String> {
+    match audio {
+        AudioOutput::Pcm {
+            mut data,
+            sample_rate,
+            channels,
+        } => {
+            let aligned_len = data.len() - (data.len() % 2);
+            data.truncate(aligned_len);
+            if data.is_empty() {
+                return Err("pcm buffer is empty".to_string());
+            }
+            let samples: Vec<i16> = bytemuck::cast_slice(&data).to_vec();
+            let source = SamplesBuffer::new(channels, sample_rate, samples);
+            let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
+            sink.append(source);
+            sink.play();
+            Ok(sink)
+        }
+        AudioOutput::Mp3 { data } => {
+            if data.is_empty() {
+                return Err("mp3 buffer is empty".to_string());
+            }
+            let reader = BufReader::new(Cursor::new(data));
+            let decoder = Decoder::new(reader).map_err(|err| format!("decode failed: {}", err))?;
+            let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
+            sink.append(decoder);
+            sink.play();
+            Ok(sink)
+        }
+    }
 }
 
 fn play_beep(handle: &OutputStreamHandle, current_sink: &mut Option<Sink>) {

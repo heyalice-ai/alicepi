@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod engine;
 mod orchestrator;
 mod protocol;
 mod tasks;
