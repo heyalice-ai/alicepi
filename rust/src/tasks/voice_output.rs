@@ -104,7 +104,6 @@ fn play_audio_file(handle: &OutputStreamHandle, path: &str) -> Result<Sink, Stri
 }
 
 fn play_audio(handle: &OutputStreamHandle, audio: AudioOutput) -> Result<Sink, String> {
-    tracing::info!("playing audio output: {:?}", audio);
     
     match audio {
         AudioOutput::Pcm {
