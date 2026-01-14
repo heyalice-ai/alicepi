@@ -51,6 +51,9 @@ fi
 # cargo build --features=gpio --profile=${PROFILE} --target ${ARCH} "$@"
 cargo build --profile=${PROFILE} --target ${ARCH} "$@"
 
+rsync -rvpP ./target/${ARCH}/${PROFILE}/alicepi ${DEPLOY_TARGET}:alicepi/alicepi-static
+
+
+# Also sync the models
 rsync -rvpP ./models ./assets ${DEPLOY_TARGET}:alicepi/
 
-rsync -rvpP ./target/${ARCH}/${PROFILE}/alicepi ${DEPLOY_TARGET}:alicepi/alicepi-static

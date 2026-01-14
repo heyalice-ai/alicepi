@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures_util::StreamExt;
 use regex::Regex;
 use reqwest::header::CONTENT_TYPE;
@@ -11,9 +12,9 @@ use url::Url;
 
 use crate::engine::{
     env_duration_seconds, env_optional_f32, env_optional_string, env_optional_u32, env_string,
-    send_with_retry, Engine, EngineError, EngineRequest, EngineResponse,
+    send_with_retry, AudioStream, Engine, EngineAudio, EngineError, EngineRequest, EngineResponse,
 };
-use crate::protocol::AudioOutput;
+use crate::protocol::AudioStreamFormat;
 
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are Alice, a helpful AI assistant for the AlicePi smart speaker. Keep your responses concise and friendly.
 
@@ -120,6 +121,7 @@ impl LlmClient {
     fn new(config: &LocalEngineConfig) -> Result<Self, EngineError> {
         let client = reqwest::Client::builder()
             .timeout(config.llm_timeout)
+            .user_agent("BookOfBooks/1.0")
             .build()
             .map_err(|err| EngineError::LlmRequest(err.to_string()))?;
         Ok(Self {
@@ -203,7 +205,7 @@ impl VibevoiceClient {
         }
     }
 
-    async fn synthesize(&self, text: &str) -> Result<AudioOutput, EngineError> {
+    async fn synthesize_stream(&self, text: &str) -> Result<AudioStream, EngineError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(EngineError::Vibevoice("empty voice output".to_string()));
@@ -219,32 +221,35 @@ impl VibevoiceClient {
             .map_err(|_| EngineError::Vibevoice("connection timeout".to_string()))?
             .map_err(|err| EngineError::Vibevoice(err.to_string()))?;
 
-        let (_write, mut read) = stream.split();
-        let mut audio = Vec::new();
-        while let Some(message) = read.next().await {
-            match message {
-                Ok(Message::Binary(chunk)) => audio.extend_from_slice(&chunk),
-                Ok(Message::Text(text)) => {
-                    tracing::debug!("vibevoice message: {}", text);
-                }
-                Ok(Message::Close(_)) => break,
-                Ok(_) => {}
-                Err(err) => {
-                    return Err(EngineError::Vibevoice(err.to_string()));
-                }
-            }
-        }
-
-        if audio.is_empty() {
-            return Err(EngineError::Vibevoice(
-                "no audio received from vibevoice".to_string(),
-            ));
-        }
-
-        Ok(AudioOutput::Pcm {
-            data: audio,
+        let (_write, read) = stream.split();
+        let format = AudioStreamFormat::Pcm {
             sample_rate: self.sample_rate,
             channels: self.channels,
+        };
+        let stream = futures_util::stream::unfold(Some(read), |state| async {
+            let mut read = state?;
+            loop {
+                match read.next().await {
+                    Some(Ok(Message::Binary(chunk))) => {
+                        return Some((Ok(Bytes::from(chunk)), Some(read)));
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        tracing::debug!("vibevoice message: {}", text);
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        return None;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(err)) => {
+                        return Some((Err(EngineError::Vibevoice(err.to_string())), None));
+                    }
+                }
+            }
+        });
+
+        Ok(AudioStream {
+            format,
+            stream: Box::pin(stream),
         })
     }
 
@@ -287,11 +292,11 @@ impl Engine for LocalEngine {
         let response_text = self.llm.call(request.history).await?;
         let voice_text = extract_voice_output(&response_text)
             .unwrap_or_else(|| response_text.trim().to_string());
-        let audio = self.vibevoice.synthesize(&voice_text).await?;
+        let audio = self.vibevoice.synthesize_stream(&voice_text).await?;
 
         Ok(EngineResponse {
             assistant_text: Some(response_text),
-            audio,
+            audio: EngineAudio::Stream(audio),
         })
     }
 }

@@ -1,14 +1,18 @@
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::config::ServerConfig;
-use crate::engine::{build_engine, Engine, EngineConfig, EngineError, EngineRequest, EngineResponse, SessionManager};
+use crate::engine::{
+    build_engine, Engine, EngineAudio, EngineConfig, EngineError, EngineRequest, EngineResponse,
+    SessionManager,
+};
 use crate::protocol::{
     ClientCommand, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot, VoiceInputCommand,
     VoiceInputEvent, VoiceOutputCommand,
@@ -44,6 +48,7 @@ enum OrchestratorEvent {
     EngineResponse {
         generation: u64,
         result: Result<EngineResponse, EngineError>,
+        started_at: Instant,
     },
 }
 
@@ -199,7 +204,11 @@ impl Orchestrator {
 
     async fn handle_internal_event(&mut self, event: OrchestratorEvent) {
         match event {
-            OrchestratorEvent::EngineResponse { generation, result } => {
+            OrchestratorEvent::EngineResponse {
+                generation,
+                result,
+                started_at,
+            } => {
                 if self.generation.load(Ordering::SeqCst) == generation {
                     match result {
                         Ok(response) => {
@@ -210,10 +219,78 @@ impl Orchestrator {
                             }
 
                             self.set_state(State::Speaking);
-                            let _ = self
-                                .voice_output
-                                .send(VoiceOutputCommand::PlayAudio { audio: response.audio })
-                                .await;
+                            match response.audio {
+                                EngineAudio::Full(audio) => {
+                                    let _ = self
+                                        .voice_output
+                                        .send(VoiceOutputCommand::PlayAudio { audio })
+                                        .await;
+                                }
+                                EngineAudio::Stream(mut audio) => {
+                                    let voice_output = self.voice_output.clone();
+                                    let generation_ref = self.generation.clone();
+                                    let started_at = started_at;
+                                    tokio::spawn(async move {
+                                        let mut logged_first_chunk = false;
+                                        let mut chunk_count: u64 = 0;
+                                        if voice_output
+                                            .send(VoiceOutputCommand::StartStream {
+                                                format: audio.format,
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                        while let Some(chunk) = audio.stream.as_mut().next().await {
+                                            if generation_ref.load(Ordering::SeqCst) != generation {
+                                                let _ = voice_output
+                                                    .send(VoiceOutputCommand::Stop)
+                                                    .await;
+                                                return;
+                                            }
+                                            match chunk {
+                                                Ok(bytes) => {
+                                                    chunk_count += 1;
+                                                    if !logged_first_chunk {
+                                                        let wait = started_at.elapsed();
+                                                        tracing::info!(
+                                                            "engine stream first chunk after {:.0}ms ({} bytes)",
+                                                            wait.as_secs_f64() * 1000.0,
+                                                            bytes.len()
+                                                        );
+                                                        logged_first_chunk = true;
+                                                    } else if voice_output
+                                                        .send(VoiceOutputCommand::StreamChunk {
+                                                            data: bytes.to_vec(),
+                                                        })
+                                                        .await
+                                                        .is_err()
+                                                    {
+                                                        tracing::warn!(
+                                                            "voice output stream closed unexpectedly"
+                                                        );
+                                                        return;
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    tracing::warn!(
+                                                        "engine stream failed: {}",
+                                                        err
+                                                    );
+                                                    let _ = voice_output
+                                                        .send(VoiceOutputCommand::Stop)
+                                                        .await;
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        let _ = voice_output
+                                            .send(VoiceOutputCommand::EndStream)
+                                            .await;
+                                    });
+                                }
+                            }
                         }
                         Err(err) => {
                             tracing::warn!("engine request failed: {}", err);
@@ -240,6 +317,7 @@ impl Orchestrator {
         self.session.add_user_message(&text);
         self.set_state(State::Processing);
         let generation = self.generation.load(Ordering::SeqCst);
+        let started_at = Instant::now();
         let tx = self.internal_tx.clone();
         let engine = self.engine.clone();
         let history = self.session.history().to_vec();
@@ -252,7 +330,11 @@ impl Orchestrator {
             };
             let result = engine.process(request).await;
             let _ = tx
-                .send(OrchestratorEvent::EngineResponse { generation, result })
+                .send(OrchestratorEvent::EngineResponse {
+                    generation,
+                    result,
+                    started_at,
+                })
                 .await;
         });
     }

@@ -171,7 +171,7 @@ pub async fn run(
                 if last_log.elapsed() >= Duration::from_secs(5) {
                     let elapsed = last_log.elapsed().as_secs_f64().max(0.001);
                     let rate = chunk_count as f64 / elapsed;
-                    tracing::info!(
+                    tracing::debug!(
                         "speech_rec audio chunks: {} in {:.1}s ({:.1} chunks/sec)",
                         chunk_count,
                         elapsed,

@@ -54,6 +54,15 @@ pub enum AudioOutput {
 }
 
 #[derive(Debug, Clone)]
+pub enum AudioStreamFormat {
+    Pcm {
+        sample_rate: u32,
+        channels: u16,
+    },
+    Mp3,
+}
+
+#[derive(Debug, Clone)]
 pub enum VoiceInputCommand {
     StartListening,
     StopListening,
@@ -74,6 +83,9 @@ pub enum VoiceOutputCommand {
     PlayText { text: String },
     PlayAudioFile { path: String },
     PlayAudio { audio: AudioOutput },
+    StartStream { format: AudioStreamFormat },
+    StreamChunk { data: Vec<u8> },
+    EndStream,
     Stop,
     Shutdown,
 }

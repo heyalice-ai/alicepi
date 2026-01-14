@@ -21,7 +21,7 @@ use crate::protocol::{ClientCommand, ServerReply};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("alicepi=info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env().add_directive("alicepi=debug".parse()?))
         .init();
 
     let cli = Cli::parse();

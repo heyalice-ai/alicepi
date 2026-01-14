@@ -1,12 +1,15 @@
 use std::env;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures_util::Stream;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::protocol::AudioOutput;
+use crate::protocol::{AudioOutput, AudioStreamFormat};
 
 mod cloud;
 mod local;
@@ -99,10 +102,30 @@ pub struct EngineRequest<'a> {
     pub session_id: &'a str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EngineResponse {
     pub assistant_text: Option<String>,
-    pub audio: AudioOutput,
+    pub audio: EngineAudio,
+}
+
+pub struct AudioStream {
+    pub format: AudioStreamFormat,
+    pub stream: Pin<Box<dyn Stream<Item = Result<Bytes, EngineError>> + Send>>,
+}
+
+#[derive(Debug)]
+pub enum EngineAudio {
+    Full(AudioOutput),
+    Stream(AudioStream),
+}
+
+impl std::fmt::Debug for AudioStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioStream")
+            .field("format", &self.format)
+            .field("stream", &"<stream>")
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

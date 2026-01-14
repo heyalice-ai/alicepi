@@ -1,14 +1,15 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::header::ACCEPT;
 use serde::Serialize;
 
 use crate::engine::{
-    env_duration_seconds, env_optional_string, env_string, send_with_retry, Engine, EngineError,
-    EngineRequest, EngineResponse,
+    env_duration_seconds, env_optional_string, env_string, send_with_retry, AudioStream, Engine,
+    EngineAudio, EngineError, EngineRequest, EngineResponse,
 };
-use crate::protocol::AudioOutput;
+use crate::protocol::AudioStreamFormat;
 
 #[derive(Debug, Clone)]
 pub struct CloudEngineConfig {
@@ -38,6 +39,7 @@ pub struct CloudEngine {
 impl CloudEngine {
     pub fn new(config: CloudEngineConfig) -> Result<Self, EngineError> {
         let client = reqwest::Client::builder()
+            .user_agent("BookOfBooks/1.0")
             .timeout(config.timeout)
             .build()
             .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
@@ -68,22 +70,14 @@ impl Engine for CloudEngine {
             .error_for_status()
             .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
-
-        if bytes.is_empty() {
-            return Err(EngineError::CloudRequest(
-                "cloud response returned empty audio".to_string(),
-            ));
-        }
-
         Ok(EngineResponse {
             assistant_text: None,
-            audio: AudioOutput::Mp3 {
-                data: bytes.to_vec(),
-            },
+            audio: EngineAudio::Stream(AudioStream {
+                format: AudioStreamFormat::Mp3,
+                stream: Box::pin(response.bytes_stream().map(|chunk| {
+                    chunk.map_err(|err| EngineError::CloudRequest(err.to_string()))
+                })),
+            }),
         })
     }
 }
