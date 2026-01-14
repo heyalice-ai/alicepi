@@ -1,6 +1,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::iter::Peekable;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
@@ -173,8 +174,7 @@ fn play_audio(handle: &OutputStreamHandle, audio: AudioOutput) -> Result<Sink, S
                 sample_rate,
                 channels
             );
-            let samples: Vec<i16> = decoder.collect();
-            let stereo_samples = mono_then_stereo(samples, channels)?;
+            let stereo_samples: Vec<i16> = mono_then_stereo(decoder, channels)?.collect();
             let source = SamplesBuffer::new(2, sample_rate, stereo_samples);
             let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
             sink.append(source);
@@ -342,7 +342,7 @@ fn min_pcm_chunk_bytes(sample_rate: u32, channels: u16) -> usize {
 }
 
 fn min_mp3_chunk_bytes() -> usize {
-    4096
+    1024 * 32
 }
 
 fn silence_pcm_bytes(sample_rate: u32, channels: u16, ms: u64) -> Vec<u8> {
@@ -414,27 +414,29 @@ fn push_pcm_chunk(
     Ok(())
 }
 
-struct StreamingReader {
+struct Mp3StreamReader {
     rx: Arc<Mutex<std_mpsc::Receiver<StreamMessage>>>,
-    buffer: Vec<u8>,
-    pos: usize,
+    cursor: Cursor<Vec<u8>>,
     ended: bool,
 }
 
-impl StreamingReader {
-    fn new(rx: std_mpsc::Receiver<StreamMessage>) -> Self {
+impl Mp3StreamReader {
+    fn new(
+        rx: Arc<Mutex<std_mpsc::Receiver<StreamMessage>>>,
+        buffer: Vec<u8>,
+        ended: bool,
+    ) -> Self {
         Self {
-            rx: Arc::new(Mutex::new(rx)),
-            buffer: Vec::new(),
-            pos: 0,
-            ended: false,
+            rx,
+            cursor: Cursor::new(buffer),
+            ended,
         }
     }
 }
 
-impl Read for StreamingReader {
+impl Read for Mp3StreamReader {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        while self.pos >= self.buffer.len() && !self.ended {
+        while self.cursor.position() as usize >= self.cursor.get_ref().len() && !self.ended {
             let message = {
                 let rx = self
                     .rx
@@ -445,7 +447,7 @@ impl Read for StreamingReader {
             match message {
                 Ok(StreamMessage::Data(data)) => {
                     if !data.is_empty() {
-                        self.buffer.extend_from_slice(&data);
+                        self.cursor.get_mut().extend_from_slice(&data);
                     }
                 }
                 Ok(StreamMessage::End) | Err(_) => {
@@ -454,28 +456,35 @@ impl Read for StreamingReader {
             }
         }
 
-        if self.pos >= self.buffer.len() {
+        let pos = self.cursor.position() as usize;
+        let len = self.cursor.get_ref().len();
+        if pos >= len {
             return Ok(0);
         }
 
-        let available = self.buffer.len() - self.pos;
+        let available = len - pos;
+        if available < out.len() && !self.ended {
+            tracing::debug!(
+                "streaming reader underflow: requested {}, available {} (continues)",
+                out.len(),
+                available
+            );
+        }
+
         let to_copy = available.min(out.len());
-        out[..to_copy].copy_from_slice(&self.buffer[self.pos..self.pos + to_copy]);
-        self.pos += to_copy;
+        out[..to_copy].copy_from_slice(&self.cursor.get_ref()[pos..pos + to_copy]);
+        self.cursor.set_position((pos + to_copy) as u64);
         Ok(to_copy)
     }
 }
 
-impl Seek for StreamingReader {
+impl Seek for Mp3StreamReader {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        let len = if self.ended {
-            self.buffer.len()
-        } else {
-            self.buffer.len()
-        };
+        let len = self.cursor.get_ref().len();
+        let current = self.cursor.position() as i64;
         let next = match pos {
             SeekFrom::Start(value) => value as i64,
-            SeekFrom::Current(offset) => self.pos as i64 + offset,
+            SeekFrom::Current(offset) => current + offset,
             SeekFrom::End(offset) => {
                 if !self.ended {
                     return Err(std::io::Error::new(
@@ -493,9 +502,44 @@ impl Seek for StreamingReader {
                 "invalid seek",
             ));
         }
-        self.pos = next as usize;
-        Ok(self.pos as u64)
+        self.cursor.set_position(next as u64);
+        Ok(self.cursor.position())
     }
+}
+
+fn prefill_mp3_bytes(
+    rx: &Arc<Mutex<std_mpsc::Receiver<StreamMessage>>>,
+    stop: &AtomicBool,
+    min_bytes: usize,
+) -> (Vec<u8>, bool, bool) {
+    let mut buffer = Vec::new();
+    let mut ended = false;
+    let mut stopped = false;
+    while buffer.len() < min_bytes {
+        if stop.load(Ordering::SeqCst) {
+            stopped = true;
+            break;
+        }
+        let message = match rx.lock() {
+            Ok(rx) => rx.recv(),
+            Err(_) => {
+                ended = true;
+                break;
+            }
+        };
+        match message {
+            Ok(StreamMessage::Data(chunk)) => {
+                if !chunk.is_empty() {
+                    buffer.extend_from_slice(&chunk);
+                }
+            }
+            Ok(StreamMessage::End) | Err(_) => {
+                ended = true;
+                break;
+            }
+        }
+    }
+    (buffer, ended, stopped)
 }
 
 fn run_mp3_stream(
@@ -504,7 +548,26 @@ fn run_mp3_stream(
     stop: Arc<AtomicBool>,
     timings: Arc<Mutex<StreamTimings>>,
 ) {
-    let reader = StreamingReader::new(rx);
+    const MP3_PREFILL_BYTES: usize = 512 * 1024;
+    let rx = Arc::new(Mutex::new(rx));
+    let (prefill, ended, stopped) = prefill_mp3_bytes(&rx, &stop, MP3_PREFILL_BYTES);
+    if stopped {
+        log_total_playback("mp3", timings, true);
+        return;
+    }
+    if prefill.is_empty() && ended {
+        tracing::warn!("mp3 stream ended before any audio arrived");
+        log_total_playback("mp3", timings, false);
+        return;
+    }
+    if prefill.len() < MP3_PREFILL_BYTES {
+        tracing::warn!(
+            "mp3 decoder underrun: buffered {} bytes before decode",
+            prefill.len()
+        );
+    }
+
+    let reader = Mp3StreamReader::new(rx, prefill, ended);
     let reader = BufReader::new(reader);
     let decoder = match Decoder::new(reader) {
         Ok(decoder) => decoder,
@@ -520,6 +583,8 @@ fn run_mp3_stream(
             return;
         }
     };
+    sink.play();
+    
     let sample_rate = decoder.sample_rate();
     let channels = decoder.channels();
     if sample_rate > 0 && channels > 0 {
@@ -527,8 +592,23 @@ fn run_mp3_stream(
             .take_duration(Duration::from_millis(START_SILENCE_MS));
         sink.append(silence);
     }
-    sink.append(decoder);
-    sink.play();
+    tracing::info!(
+        "mp3 decoded sample_rate: {}, channels: {}",
+        sample_rate,
+        channels
+    );
+    let stereo_iter = match mono_then_stereo(decoder, channels) {
+        Ok(iter) => iter,
+        Err(err) => {
+            tracing::warn!("mp3 stereo conversion failed: {}", err);
+            return;
+        }
+    }.collect::<Vec<i16>>();
+
+
+    let samples = SamplesBuffer::new(2, sample_rate, stereo_iter);
+    sink.append(samples);
+
     loop {
         if stop.load(Ordering::SeqCst) {
             sink.stop();
@@ -671,30 +751,109 @@ fn open_output_stream() -> Result<(OutputStream, OutputStreamHandle), String> {
     OutputStream::try_default().map_err(|err| format!("default output device failed: {}", err))
 }
 
-fn mono_then_stereo(samples: Vec<i16>, channels: u16) -> Result<Vec<i16>, String> {
-    if samples.is_empty() {
-        return Err("mp3 decoded to empty buffer".to_string());
-    }
+fn mono_then_stereo<I>(mut samples: rodio::Decoder<I>, channels: u16) -> Result<MonoThenStereo<I>, String>
+where
+    I: Read + Seek,
+{
     let channel_count = channels as usize;
     if channel_count == 0 {
         return Err("mp3 reported zero channels".to_string());
     }
-    let aligned_len = samples.len() - (samples.len() % channel_count);
-    if aligned_len == 0 {
-        return Err("mp3 decoded buffer is empty".to_string());
+    let mut frame = Vec::with_capacity(channel_count);
+    while frame.len() < channel_count {
+        match samples.next() {
+            Some(sample) => frame.push(sample),
+            None => {
+                if frame.is_empty() {
+                    return Err("mp3 decoded to empty buffer".to_string());
+                }
+                return Err("mp3 decoded buffer is empty".to_string());
+            }
+        }
     }
-    let samples = &samples[..aligned_len];
-    let frames = aligned_len / channel_count;
-    let mut stereo = Vec::with_capacity(frames * 2);
-    for frame in 0..frames {
-        let start = frame * channel_count;
-        let end = start + channel_count;
-        let sum: i32 = samples[start..end].iter().map(|sample| *sample as i32).sum();
-        let mono = (sum / channel_count as i32) as i16;
-        stereo.push(mono);
-        stereo.push(mono);
+
+    let mono = mono_from_frame(&frame, channel_count);
+    Ok(MonoThenStereo::new(samples, channel_count, mono))
+}
+
+struct MonoThenStereo<I: Read + Seek> {
+    iter: rodio::Decoder<I>,
+    channel_count: usize,
+    frame: Vec<i16>,
+    pending: [i16; 2],
+    pending_idx: usize,
+}
+
+impl<I> MonoThenStereo<I>
+where
+    I: Read + Seek,
+{
+    fn new(iter: rodio::Decoder<I>, channel_count: usize, mono: i16) -> Self {
+        Self {
+            iter,
+            channel_count,
+            frame: Vec::with_capacity(channel_count),
+            pending: [mono, mono],
+            pending_idx: 0,
+        }
     }
-    Ok(stereo)
+
+    fn next_frame_mono(&mut self) -> Option<i16> {
+        self.frame.clear();
+        while self.frame.len() < self.channel_count {
+            match self.iter.next() {
+                Some(sample) => self.frame.push(sample),
+                None => return None,
+            }
+        }
+        Some(mono_from_frame(&self.frame, self.channel_count))
+    }
+}
+
+impl<I> Iterator for MonoThenStereo<I>
+where
+    I: Read + Seek,
+{
+    type Item = i16;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pending_idx < self.pending.len() {
+            let sample = self.pending[self.pending_idx];
+            self.pending_idx += 1;
+            return Some(sample);
+        }
+
+        let mono = self.next_frame_mono()?;
+        self.pending = [mono, mono];
+        self.pending_idx = 1;
+        Some(mono)
+    }
+}
+
+impl<I> Source for MonoThenStereo<I>
+where
+    I: Read + Seek + Send + 'static,
+{
+    fn current_frame_len(&self) -> Option<usize> {
+        self.iter.current_frame_len()
+    }
+
+    fn channels(&self) -> u16 {
+        2
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.iter.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.iter.total_duration()
+    }
+}
+
+fn mono_from_frame(frame: &[i16], channel_count: usize) -> i16 {
+    let sum: i32 = frame.iter().map(|sample| *sample as i32).sum();
+    (sum / channel_count as i32) as i16
 }
 
 fn play_beep(handle: &OutputStreamHandle, current_sink: &mut Option<Sink>) {

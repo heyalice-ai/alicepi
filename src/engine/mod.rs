@@ -152,14 +152,18 @@ pub enum EngineConfig {
 }
 
 impl EngineConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env(stream_audio: bool) -> Self {
         let mode = env::var("ORCHESTRATOR_MODE")
             .unwrap_or_else(|_| "local".to_string())
             .to_lowercase();
         if mode == "cloud" {
-            EngineConfig::Cloud(CloudEngineConfig::from_env())
+            let mut config = CloudEngineConfig::from_env();
+            config.stream_audio = stream_audio;
+            EngineConfig::Cloud(config)
         } else {
-            EngineConfig::Local(LocalEngineConfig::from_env())
+            let mut config = LocalEngineConfig::from_env();
+            config.stream_audio = stream_audio;
+            EngineConfig::Local(config)
         }
     }
 }

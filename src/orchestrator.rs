@@ -460,7 +460,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
     tokio::spawn(gpio_task);
     tokio::spawn(server_task);
 
-    let engine = build_engine(EngineConfig::from_env())
+    let engine = build_engine(EngineConfig::from_env(config.stream_audio))
         .map_err(|err| format!("engine init failed: {}", err))?;
     let session_timeout = session_timeout_from_env();
     let mut orchestrator = Orchestrator::new(

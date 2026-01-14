@@ -14,7 +14,7 @@ use crate::engine::{
     env_duration_seconds, env_optional_f32, env_optional_string, env_optional_u32, env_string,
     send_with_retry, AudioStream, Engine, EngineAudio, EngineError, EngineRequest, EngineResponse,
 };
-use crate::protocol::AudioStreamFormat;
+use crate::protocol::{AudioOutput, AudioStreamFormat};
 
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are Alice, a helpful AI assistant for the AlicePi smart speaker. Keep your responses concise and friendly.
 
@@ -87,6 +87,7 @@ pub struct LocalEngineConfig {
     pub vibevoice_sample_rate: u32,
     pub vibevoice_channels: u16,
     pub llm_timeout: Duration,
+    pub stream_audio: bool,
 }
 
 impl LocalEngineConfig {
@@ -105,6 +106,7 @@ impl LocalEngineConfig {
                 .and_then(|value| u16::try_from(value).ok())
                 .unwrap_or(1),
             llm_timeout: env_duration_seconds("LLM_TIMEOUT_SECONDS", 15.0),
+            stream_audio: true,
         }
     }
 }
@@ -275,6 +277,7 @@ impl VibevoiceClient {
 pub struct LocalEngine {
     llm: LlmClient,
     vibevoice: VibevoiceClient,
+    stream_audio: bool,
 }
 
 impl LocalEngine {
@@ -282,6 +285,7 @@ impl LocalEngine {
         Ok(Self {
             llm: LlmClient::new(&config)?,
             vibevoice: VibevoiceClient::new(&config),
+            stream_audio: config.stream_audio,
         })
     }
 }
@@ -293,11 +297,37 @@ impl Engine for LocalEngine {
         let voice_text = extract_voice_output(&response_text)
             .unwrap_or_else(|| response_text.trim().to_string());
         let audio = self.vibevoice.synthesize_stream(&voice_text).await?;
+        if self.stream_audio {
+            Ok(EngineResponse {
+                assistant_text: Some(response_text),
+                audio: EngineAudio::Stream(audio),
+            })
+        } else {
+            let format = audio.format;
+            let mut stream = audio.stream;
+            let mut data: Vec<u8> = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk?;
+                data.extend_from_slice(&bytes);
+            }
 
-        Ok(EngineResponse {
-            assistant_text: Some(response_text),
-            audio: EngineAudio::Stream(audio),
-        })
+            let full_audio = match format {
+                AudioStreamFormat::Pcm {
+                    sample_rate,
+                    channels,
+                } => AudioOutput::Pcm {
+                    data,
+                    sample_rate,
+                    channels,
+                },
+                AudioStreamFormat::Mp3 => AudioOutput::Mp3 { data },
+            };
+
+            Ok(EngineResponse {
+                assistant_text: Some(response_text),
+                audio: EngineAudio::Full(full_audio),
+            })
+        }
     }
 }
 

@@ -29,14 +29,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Server {
             bind,
             watchdog_ms,
+            stream,
+            no_stream,
             gpio_button,
             gpio_lid,
         } => {
+            let stream_audio = if stream {
+                true
+            } else if no_stream {
+                false
+            } else {
+                false
+            };
             let config = ServerConfig {
                 bind_addr: bind,
                 watchdog_timeout: Duration::from_millis(watchdog_ms),
                 gpio_button_pin: gpio_button,
                 gpio_lid_pin: gpio_lid,
+                stream_audio,
             };
             orchestrator::run_server(config).await.map_err(|err| err.into())
         }

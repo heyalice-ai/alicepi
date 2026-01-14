@@ -9,7 +9,7 @@ use crate::engine::{
     env_duration_seconds, env_optional_string, env_string, send_with_retry, AudioStream, Engine,
     EngineAudio, EngineError, EngineRequest, EngineResponse,
 };
-use crate::protocol::AudioStreamFormat;
+use crate::protocol::{AudioOutput, AudioStreamFormat};
 
 #[derive(Debug, Clone)]
 pub struct CloudEngineConfig {
@@ -17,6 +17,7 @@ pub struct CloudEngineConfig {
     pub voice_id: String,
     pub tenant_id: Option<String>,
     pub timeout: Duration,
+    pub stream_audio: bool,
 }
 
 impl CloudEngineConfig {
@@ -26,6 +27,7 @@ impl CloudEngineConfig {
             voice_id: env_string("CLOUD_VOICE_ID", "af_alloy"),
             tenant_id: env_optional_string("CLOUD_TENANT_ID"),
             timeout: env_duration_seconds("CLOUD_TIMEOUT_SECONDS", 30.0),
+            stream_audio: true,
         }
     }
 }
@@ -70,15 +72,28 @@ impl Engine for CloudEngine {
             .error_for_status()
             .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
 
-        Ok(EngineResponse {
-            assistant_text: None,
-            audio: EngineAudio::Stream(AudioStream {
-                format: AudioStreamFormat::Mp3,
-                stream: Box::pin(response.bytes_stream().map(|chunk| {
-                    chunk.map_err(|err| EngineError::CloudRequest(err.to_string()))
-                })),
-            }),
-        })
+        if self.config.stream_audio {
+            Ok(EngineResponse {
+                assistant_text: None,
+                audio: EngineAudio::Stream(AudioStream {
+                    format: AudioStreamFormat::Mp3,
+                    stream: Box::pin(response.bytes_stream().map(|chunk| {
+                        chunk.map_err(|err| EngineError::CloudRequest(err.to_string()))
+                    })),
+                }),
+            })
+        } else {
+            let data = response
+                .bytes()
+                .await
+                .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
+            Ok(EngineResponse {
+                assistant_text: None,
+                audio: EngineAudio::Full(AudioOutput::Mp3 {
+                    data: data.to_vec(),
+                }),
+            })
+        }
     }
 }
 

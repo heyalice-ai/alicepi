@@ -16,6 +16,10 @@ pub enum Command {
         bind: String,
         #[arg(long, default_value_t = 3000)]
         watchdog_ms: u64,
+        #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with = "no_stream")]
+        stream: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with = "stream")]
+        no_stream: bool,
         #[arg(long)]
         gpio_button: Option<u8>,
         #[arg(long)]
