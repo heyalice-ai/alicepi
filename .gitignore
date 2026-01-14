@@ -1,5 +1,7 @@
 # Rust
 /target/
+/models/ggml-*.bin
+/assets/silero_vad.onnx
 
 # IDE
 .vscode/

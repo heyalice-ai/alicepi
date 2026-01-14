@@ -2,6 +2,7 @@
 name = "alicepi"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 # [profile.release]
 # debug = true
@@ -34,6 +35,9 @@ url = "2.5.2"
 uuid = { version = "1.10.0", features = ["v4"] }
 
 rppal = { version = "0.19.0", optional = true }
+
+[build-dependencies]
+ureq = "3.1.4"
 
 [features]
 default = []
