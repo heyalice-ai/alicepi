@@ -8,9 +8,10 @@ use std::time::Duration;
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use rodio::source::{SineWave, Zero};
 use rodio::buffer::SamplesBuffer;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::mixer::Mixer;
+use rodio::source::{SineWave, Zero};
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use tokio::sync::{mpsc, watch};
 
 use crate::protocol::{AudioOutput, AudioStreamFormat, VoiceOutputCommand};
@@ -45,14 +46,14 @@ pub async fn run(mut rx: mpsc::Receiver<VoiceOutputCommand>, mut shutdown: watch
 }
 
 fn output_loop(rx: std_mpsc::Receiver<VoiceOutputCommand>) {
-    let (stream, handle) = match open_output_stream() {
+    let stream = match open_output_stream() {
         Ok(value) => value,
         Err(err) => {
             tracing::error!("voice output failed to open device: {}", err);
             return;
         }
     };
-    let _stream = stream;
+    let handle = stream.mixer();
     let mut current_sink: Option<Sink> = None;
     let mut current_stream: Option<StreamState> = None;
 
@@ -131,17 +132,17 @@ fn output_loop(rx: std_mpsc::Receiver<VoiceOutputCommand>) {
     }
 }
 
-fn play_audio_file(handle: &OutputStreamHandle, path: &str) -> Result<Sink, String> {
+fn play_audio_file(handle: &Mixer, path: &str) -> Result<Sink, String> {
     let file = File::open(path).map_err(|err| format!("open failed: {}", err))?;
     let reader = BufReader::new(file);
     let decoder = Decoder::new(reader).map_err(|err| format!("decode failed: {}", err))?;
-    let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
+    let sink = Sink::connect_new(handle);
     sink.append(decoder);
     sink.play();
     Ok(sink)
 }
 
-fn play_audio(handle: &OutputStreamHandle, audio: AudioOutput) -> Result<Sink, String> {
+fn play_audio(handle: &Mixer, audio: AudioOutput) -> Result<Sink, String> {
     match audio {
         AudioOutput::Pcm {
             mut data,
@@ -153,9 +154,12 @@ fn play_audio(handle: &OutputStreamHandle, audio: AudioOutput) -> Result<Sink, S
             if data.is_empty() {
                 return Err("pcm buffer is empty".to_string());
             }
-            let samples: Vec<i16> = bytemuck::cast_slice(&data).to_vec();
+            let samples: Vec<f32> = bytemuck::cast_slice(&data)
+                .iter()
+                .map(|&s: &f32| s as f32 / 32768.0)
+                .collect();
             let source = SamplesBuffer::new(channels, sample_rate, samples);
-            let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
+            let sink = Sink::connect_new(handle);
             sink.append(source);
             sink.play();
             Ok(sink)
@@ -173,9 +177,9 @@ fn play_audio(handle: &OutputStreamHandle, audio: AudioOutput) -> Result<Sink, S
                 sample_rate,
                 channels
             );
-            let stereo_samples: Vec<i16> = mono_then_stereo(decoder, channels)?.collect();
+            let stereo_samples: Vec<f32> = mono_then_stereo(decoder, channels)?.collect();
             let source = SamplesBuffer::new(2, sample_rate, stereo_samples);
-            let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
+            let sink = Sink::connect_new(handle);
             sink.append(source);
             sink.play();
             Ok(sink)
@@ -221,14 +225,7 @@ impl StreamState {
                 pending,
                 min_bytes,
                 ..
-            } => push_pcm_buffered(
-                sink,
-                pending,
-                data,
-                *min_bytes,
-                *sample_rate,
-                *channels,
-            ),
+            } => push_pcm_buffered(sink, pending, data, *min_bytes, *sample_rate, *channels),
             StreamState::Mp3 {
                 tx,
                 pending,
@@ -244,7 +241,9 @@ impl StreamState {
                 sink.stop();
                 log_total_playback("pcm", timings, true);
             }
-            StreamState::Mp3 { tx, stop, timings, .. } => {
+            StreamState::Mp3 {
+                tx, stop, timings, ..
+            } => {
                 stop.store(true, Ordering::SeqCst);
                 let _ = tx.send(StreamMessage::End);
                 log_total_playback("mp3", timings, true);
@@ -268,9 +267,7 @@ impl StreamState {
                 }
                 log_total_playback("pcm", Arc::clone(timings), false);
             }
-            StreamState::Mp3 {
-                tx, pending, ..
-            } => {
+            StreamState::Mp3 { tx, pending, .. } => {
                 if !pending.is_empty() {
                     let _ = tx.send(StreamMessage::Data(std::mem::take(pending)));
                 }
@@ -288,7 +285,7 @@ impl StreamState {
 }
 
 fn start_stream(
-    handle: &OutputStreamHandle,
+    handle: &Mixer,
     format: AudioStreamFormat,
 ) -> Result<StreamState, String> {
     match format {
@@ -296,7 +293,7 @@ fn start_stream(
             sample_rate,
             channels,
         } => {
-            let sink = Sink::try_new(handle).map_err(|err| format!("sink failed: {}", err))?;
+            let sink = Sink::connect_new(handle);
             sink.play();
             let min_bytes = min_pcm_chunk_bytes(sample_rate, channels);
             let pending = silence_pcm_bytes(sample_rate, channels, START_SILENCE_MS);
@@ -307,7 +304,8 @@ fn start_stream(
                 pending,
                 min_bytes,
                 timings: Arc::new(Mutex::new(StreamTimings::new(Some((
-                    sample_rate, channels,
+                    sample_rate,
+                    channels,
                 ))))),
             })
         }
@@ -318,7 +316,9 @@ fn start_stream(
             let thread_handle = handle.clone();
             let thread_stop = Arc::clone(&stop);
             let thread_timings = Arc::clone(&timings);
-            std::thread::spawn(move || run_mp3_stream(thread_handle, rx, thread_stop, thread_timings));
+            std::thread::spawn(move || {
+                run_mp3_stream(&thread_handle, rx, thread_stop, thread_timings)
+            });
             Ok(StreamState::Mp3 {
                 tx,
                 stop,
@@ -336,7 +336,9 @@ fn min_pcm_chunk_bytes(sample_rate: u32, channels: u16) -> usize {
     let channels = channels.max(1) as u64;
     let sample_rate = sample_rate.max(1) as u64;
     let bytes_per_ms = sample_rate * channels * bytes_per_sample / 1000;
-    let min = bytes_per_ms.saturating_mul(ms).max(bytes_per_sample * channels);
+    let min = bytes_per_ms
+        .saturating_mul(ms)
+        .max(bytes_per_sample * channels);
     min as usize
 }
 
@@ -407,7 +409,10 @@ fn push_pcm_chunk(
     if data.is_empty() {
         return Ok(());
     }
-    let samples: Vec<i16> = bytemuck::cast_slice(&data).to_vec();
+    let samples: Vec<f32> = bytemuck::cast_slice(&data)
+        .iter()
+        .map(|&s: &f32| s as f32 / 32768.0)
+        .collect();
     let source = SamplesBuffer::new(channels, sample_rate, samples);
     sink.append(source);
     Ok(())
@@ -507,7 +512,7 @@ impl Seek for Mp3StreamReader {
 }
 
 fn run_mp3_stream(
-    handle: OutputStreamHandle,
+    handle: &Mixer,
     rx: std_mpsc::Receiver<StreamMessage>,
     stop: Arc<AtomicBool>,
     timings: Arc<Mutex<StreamTimings>>,
@@ -522,19 +527,13 @@ fn run_mp3_stream(
             return;
         }
     };
-    let sink = match Sink::try_new(&handle) {
-        Ok(sink) => sink,
-        Err(err) => {
-            tracing::warn!("mp3 sink failed: {}", err);
-            return;
-        }
-    };
+    let sink = Sink::connect_new(&handle);
     sink.play();
-    
+
     let sample_rate = decoder.sample_rate();
     let channels = decoder.channels();
     if sample_rate > 0 && channels > 0 {
-        let silence = Zero::<f32>::new(channels, sample_rate)
+        let silence = Zero::new(channels, sample_rate)
             .take_duration(Duration::from_millis(START_SILENCE_MS));
         sink.append(silence);
     }
@@ -657,7 +656,7 @@ fn log_total_playback(kind: &str, timings: Arc<Mutex<StreamTimings>>, stopped: b
     }
 }
 
-fn open_output_stream() -> Result<(OutputStream, OutputStreamHandle), String> {
+fn open_output_stream() -> Result<OutputStream, String> {
     let host = cpal::default_host();
     let requested_device = env::var("PLAYBACK_DEVICE")
         .ok()
@@ -686,16 +685,20 @@ fn open_output_stream() -> Result<(OutputStream, OutputStreamHandle), String> {
             .find(|device| device.name().map(|n| n.contains(&name)).unwrap_or(false))
             .ok_or_else(|| format!("output device '{}' not found", name))?;
         let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
-        let stream = OutputStream::try_from_device(&device)
+        
+        let stream = OutputStreamBuilder::from_device(device)
             .map_err(|err| format!("output device '{}' failed: {}", device_name, err))?;
         tracing::info!("using output device: '{}'", device_name);
-        return Ok(stream);
+        return stream.open_stream().map_err(|err| format!("output stream failed: {}", err));
     }
 
-    OutputStream::try_default().map_err(|err| format!("default output device failed: {}", err))
+    OutputStreamBuilder::from_default_device().map_err(|err| format!("default output device failed: {}", err))?.open_stream().map_err(|err| format!("output stream failed: {}", err))
 }
 
-fn mono_then_stereo<I>(mut samples: rodio::Decoder<I>, channels: u16) -> Result<MonoThenStereo<I>, String>
+fn mono_then_stereo<I>(
+    mut samples: rodio::Decoder<I>,
+    channels: u16,
+) -> Result<MonoThenStereo<I>, String>
 where
     I: Read + Seek,
 {
@@ -723,8 +726,8 @@ where
 struct MonoThenStereo<I: Read + Seek> {
     iter: rodio::Decoder<I>,
     channel_count: usize,
-    frame: Vec<i16>,
-    pending: [i16; 2],
+    frame: Vec<f32>,
+    pending: [f32; 2],
     pending_idx: usize,
 }
 
@@ -732,7 +735,7 @@ impl<I> MonoThenStereo<I>
 where
     I: Read + Seek,
 {
-    fn new(iter: rodio::Decoder<I>, channel_count: usize, mono: i16) -> Self {
+    fn new(iter: rodio::Decoder<I>, channel_count: usize, mono: f32) -> Self {
         Self {
             iter,
             channel_count,
@@ -742,7 +745,7 @@ where
         }
     }
 
-    fn next_frame_mono(&mut self) -> Option<i16> {
+    fn next_frame_mono(&mut self) -> Option<f32> {
         self.frame.clear();
         while self.frame.len() < self.channel_count {
             match self.iter.next() {
@@ -758,7 +761,7 @@ impl<I> Iterator for MonoThenStereo<I>
 where
     I: Read + Seek,
 {
-    type Item = i16;
+    type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.pending_idx < self.pending.len() {
@@ -778,8 +781,8 @@ impl<I> Source for MonoThenStereo<I>
 where
     I: Read + Seek + Send + 'static,
 {
-    fn current_frame_len(&self) -> Option<usize> {
-        self.iter.current_frame_len()
+    fn current_span_len(&self) -> Option<usize> {
+        self.iter.current_span_len()
     }
 
     fn channels(&self) -> u16 {
@@ -795,20 +798,19 @@ where
     }
 }
 
-fn mono_from_frame(frame: &[i16], channel_count: usize) -> i16 {
-    let sum: i32 = frame.iter().map(|sample| *sample as i32).sum();
-    (sum / channel_count as i32) as i16
+fn mono_from_frame(frame: &[f32], channel_count: usize) -> f32 {
+    let sum: f32 = frame.iter().sum();
+    sum / channel_count as f32
 }
 
-fn play_beep(handle: &OutputStreamHandle, current_sink: &mut Option<Sink>) {
-    if let Ok(sink) = Sink::try_new(handle) {
-        let source = SineWave::new(440.0)
-            .take_duration(Duration::from_millis(250))
-            .amplify(0.15);
-        sink.append(source);
-        sink.play();
-        *current_sink = Some(sink);
-    }
+fn play_beep(handle: &Mixer, current_sink: &mut Option<Sink>) {
+    let sink = Sink::connect_new(handle);
+    let source = SineWave::new(440.0)
+        .take_duration(Duration::from_millis(250))
+        .amplify(0.15);
+    sink.append(source);
+    sink.play();
+    *current_sink = Some(sink);
 }
 
 fn stop_sink(current_sink: &mut Option<Sink>) {
