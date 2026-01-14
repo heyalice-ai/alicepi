@@ -1,7 +1,6 @@
 use std::env;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
-use std::iter::Peekable;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
@@ -507,67 +506,14 @@ impl Seek for Mp3StreamReader {
     }
 }
 
-fn prefill_mp3_bytes(
-    rx: &Arc<Mutex<std_mpsc::Receiver<StreamMessage>>>,
-    stop: &AtomicBool,
-    min_bytes: usize,
-) -> (Vec<u8>, bool, bool) {
-    let mut buffer = Vec::new();
-    let mut ended = false;
-    let mut stopped = false;
-    while buffer.len() < min_bytes {
-        if stop.load(Ordering::SeqCst) {
-            stopped = true;
-            break;
-        }
-        let message = match rx.lock() {
-            Ok(rx) => rx.recv(),
-            Err(_) => {
-                ended = true;
-                break;
-            }
-        };
-        match message {
-            Ok(StreamMessage::Data(chunk)) => {
-                if !chunk.is_empty() {
-                    buffer.extend_from_slice(&chunk);
-                }
-            }
-            Ok(StreamMessage::End) | Err(_) => {
-                ended = true;
-                break;
-            }
-        }
-    }
-    (buffer, ended, stopped)
-}
-
 fn run_mp3_stream(
     handle: OutputStreamHandle,
     rx: std_mpsc::Receiver<StreamMessage>,
     stop: Arc<AtomicBool>,
     timings: Arc<Mutex<StreamTimings>>,
 ) {
-    const MP3_PREFILL_BYTES: usize = 512 * 1024;
     let rx = Arc::new(Mutex::new(rx));
-    let (prefill, ended, stopped) = prefill_mp3_bytes(&rx, &stop, MP3_PREFILL_BYTES);
-    if stopped {
-        log_total_playback("mp3", timings, true);
-        return;
-    }
-    if prefill.is_empty() && ended {
-        tracing::warn!("mp3 stream ended before any audio arrived");
-        log_total_playback("mp3", timings, false);
-        return;
-    }
-    if prefill.len() < MP3_PREFILL_BYTES {
-        tracing::warn!(
-            "mp3 decoder underrun: buffered {} bytes before decode",
-            prefill.len()
-        );
-    }
-
-    let reader = Mp3StreamReader::new(rx, prefill, ended);
+    let reader = Mp3StreamReader::new(rx, vec![], false);
     let reader = BufReader::new(reader);
     let decoder = match Decoder::new(reader) {
         Ok(decoder) => decoder,
@@ -603,11 +549,9 @@ fn run_mp3_stream(
             tracing::warn!("mp3 stereo conversion failed: {}", err);
             return;
         }
-    }.collect::<Vec<i16>>();
+    };
 
-
-    let samples = SamplesBuffer::new(2, sample_rate, stereo_iter);
-    sink.append(samples);
+    sink.append(stereo_iter);
 
     loop {
         if stop.load(Ordering::SeqCst) {

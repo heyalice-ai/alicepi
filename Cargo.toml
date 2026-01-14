@@ -38,10 +38,11 @@ uuid = { version = "1.10.0", features = ["v4"] }
 rppal = { version = "0.19.0", optional = true }
 
 [build-dependencies]
-ureq = "3.1.4"
+ureq = { version = "3.1.4", optional = true }
 
 [features]
 default = []
+download-models-on-build = ["dep:ureq"]
 gpio = ["dep:rppal"]
 lid_control = []
 hailo = []

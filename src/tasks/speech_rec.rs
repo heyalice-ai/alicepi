@@ -7,6 +7,7 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time;
 
+use crate::model_download;
 use crate::protocol::{SpeechRecCommand, SpeechRecEvent};
 use crate::watchdog::Heartbeat;
 
@@ -152,6 +153,9 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let config = SpeechRecConfig::from_env();
+    if let Err(err) = model_download::ensure_whisper_model(&config.model).await {
+        tracing::warn!("whisper model download failed: {}", err);
+    }
     let (req_tx, mut resp_rx) = spawn_transcriber(config.clone());
     let mut buffer: Vec<u8> = Vec::new();
     let mut tick = time::interval(Duration::from_millis(500));
@@ -325,9 +329,9 @@ fn resolve_model_path(spec: &str) -> Result<String, String> {
         return Ok(chosen.to_string());
     }
 
-    let fallback = format!("models/ggml-{}.bin", chosen);
-    if Path::new(&fallback).exists() {
-        return Ok(fallback);
+    let fallback = model_download::default_models_path(&format!("ggml-{}.bin", chosen));
+    if fallback.exists() {
+        return Ok(fallback.to_string_lossy().to_string());
     }
 
     Ok(chosen.to_string())

@@ -1,5 +1,5 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,7 @@ use tokio::fs;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time;
 
+use crate::model_download;
 use crate::protocol::{VoiceInputCommand, VoiceInputEvent};
 use crate::watchdog::Heartbeat;
 
@@ -62,6 +63,14 @@ impl VoiceInputConfig {
             vad_model,
         }
     }
+}
+
+fn resolve_vad_model_path(config: &VoiceInputConfig) -> PathBuf {
+    config
+        .vad_model
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| model_download::default_assets_path("silero_vad.onnx"))
 }
 
 struct CaptureStream {
@@ -118,18 +127,16 @@ impl std::fmt::Debug for VadEngine {
 
 impl VadEngine {
     fn new(config: &VoiceInputConfig) -> Self {
-        let model_path = config
-            .vad_model
-            .clone()
-            .unwrap_or_else(|| "assets/silero_vad.onnx".to_string());
+        let model_path = resolve_vad_model_path(config);
         if config.stream_sample_rate != 16_000 {
             tracing::warn!("silero VAD requires 16kHz audio; falling back to RMS VAD");
             return VadEngine::Rms;
         }
-        if Path::new(&model_path).exists() {
-            match SileroVad::new(&model_path, config.stream_sample_rate) {
+        if model_path.exists() {
+            let model_path_str = model_path.to_string_lossy();
+            match SileroVad::new(&model_path_str, config.stream_sample_rate) {
                 Ok(vad) => {
-                    tracing::info!("silero VAD enabled with {}", model_path);
+                    tracing::info!("silero VAD enabled with {}", model_path.display());
                     VadEngine::Silero(vad)
                 }
                 Err(err) => {
@@ -138,7 +145,10 @@ impl VadEngine {
                 }
             }
         } else {
-            tracing::warn!("silero VAD model not found at {}; falling back to RMS", model_path);
+            tracing::warn!(
+                "silero VAD model not found at {}; falling back to RMS",
+                model_path.display()
+            );
             VadEngine::Rms
         }
     }
@@ -529,6 +539,12 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let config = VoiceInputConfig::from_env();
+    let vad_model_path = resolve_vad_model_path(&config);
+    if config.stream_sample_rate == 16_000 {
+        if let Err(err) = model_download::ensure_silero_vad(&vad_model_path).await {
+            tracing::warn!("silero VAD download failed: {}", err);
+        }
+    }
     let (mut capture, mut pipeline) = match start_capture(&config) {
         Ok(value) => value,
         Err(err) => {

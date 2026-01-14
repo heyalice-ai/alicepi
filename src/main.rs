@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod engine;
+mod model_download;
 mod orchestrator;
 mod protocol;
 mod tasks;
