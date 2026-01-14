@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::engine::{
     env_duration_seconds, env_optional_f32, env_optional_string, env_optional_u32, env_string,
-    Engine, EngineError, EngineRequest, EngineResponse,
+    send_with_retry, Engine, EngineError, EngineRequest, EngineResponse,
 };
 use crate::protocol::AudioOutput;
 
@@ -151,14 +151,14 @@ impl LlmClient {
             stream: false,
         };
 
-        let response = self
-            .client
-            .post(&self.api_url)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|err| EngineError::LlmRequest(err.to_string()))?;
+        let response = send_with_retry(|| {
+            self.client
+                .post(&self.api_url)
+                .header(CONTENT_TYPE, "application/json")
+                .json(&payload)
+        })
+        .await
+        .map_err(|err| EngineError::LlmRequest(err.to_string()))?;
 
         let response = response
             .error_for_status()
@@ -294,7 +294,6 @@ impl Engine for LocalEngine {
             audio,
         })
     }
-
 }
 
 fn extract_voice_output(text: &str) -> Option<String> {

@@ -5,8 +5,8 @@ use reqwest::header::ACCEPT;
 use serde::Serialize;
 
 use crate::engine::{
-    env_duration_seconds, env_optional_string, env_string, Engine, EngineError, EngineRequest,
-    EngineResponse,
+    env_duration_seconds, env_optional_string, env_string, send_with_retry, Engine, EngineError,
+    EngineRequest, EngineResponse,
 };
 use crate::protocol::AudioOutput;
 
@@ -55,14 +55,14 @@ impl Engine for CloudEngine {
             tenant_id: self.config.tenant_id.as_deref(),
         };
 
-        let response = self
-            .client
-            .post(&self.config.api_url)
-            .header(ACCEPT, "audio/mpeg")
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
+        let response = send_with_retry(|| {
+            self.client
+                .post(&self.config.api_url)
+                .header(ACCEPT, "audio/mpeg")
+                .json(&payload)
+        })
+        .await
+        .map_err(|err| EngineError::CloudRequest(err.to_string()))?;
 
         let response = response
             .error_for_status()
@@ -86,7 +86,6 @@ impl Engine for CloudEngine {
             },
         })
     }
-
 }
 
 #[derive(Debug, Serialize)]
