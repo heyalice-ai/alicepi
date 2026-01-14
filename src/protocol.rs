@@ -8,6 +8,9 @@ pub enum ClientCommand {
     Text { text: String },
     VoiceFile { path: String },
     AudioFile { path: String },
+    AudioStreamStart { format: AudioStreamFormat },
+    AudioStreamChunk { data: Vec<u8> },
+    AudioStreamEnd,
     ButtonPress,
     LidOpen,
     LidClose,
@@ -53,7 +56,8 @@ pub enum AudioOutput {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AudioStreamFormat {
     Pcm {
         sample_rate: u32,

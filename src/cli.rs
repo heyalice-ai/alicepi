@@ -43,6 +43,16 @@ pub enum ClientAction {
     Voice { path: String },
     #[command(about = "Play an audio file directly through voice output (no recognition)")]
     Audio { path: String },
+    #[command(about = "Stream an MP3 file through voice output in chunks")]
+    AudioStream {
+        path: String,
+        #[arg(long, default_value_t = 8192)]
+        chunk_bytes: usize,
+        #[arg(long, default_value_t = 0)]
+        delay_after_bytes: usize,
+        #[arg(long, default_value_t = 0)]
+        delay_ms: u64,
+    },
     Button,
     LidOpen,
     LidClose,

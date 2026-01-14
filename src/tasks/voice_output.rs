@@ -341,7 +341,7 @@ fn min_pcm_chunk_bytes(sample_rate: u32, channels: u16) -> usize {
 }
 
 fn min_mp3_chunk_bytes() -> usize {
-    1024 * 32
+    4
 }
 
 fn silence_pcm_bytes(sample_rate: u32, channels: u16, ms: u64) -> Vec<u8> {

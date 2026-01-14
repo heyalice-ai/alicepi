@@ -7,6 +7,7 @@ mod protocol;
 mod tasks;
 mod watchdog;
 
+use std::io::Read;
 use std::time::Duration;
 
 use clap::Parser;
@@ -16,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cli::{ClientAction, Command, Cli};
 use crate::config::ServerConfig;
-use crate::protocol::{ClientCommand, ServerReply};
+use crate::protocol::{AudioStreamFormat, ClientCommand, ServerReply};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,35 +53,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             orchestrator::run_server(config).await.map_err(|err| err.into())
         }
         Command::Client { addr, action } => {
-            let command = match action {
-    ClientAction::Ping => ClientCommand::Ping,
-    ClientAction::Status => ClientCommand::Status,
-                ClientAction::Text { text } => ClientCommand::Text { text },
-                ClientAction::Voice { path } => ClientCommand::VoiceFile { path },
-                ClientAction::Audio { path } => ClientCommand::AudioFile { path },
-                ClientAction::Button => ClientCommand::ButtonPress,
-                ClientAction::LidOpen => ClientCommand::LidOpen,
-                ClientAction::LidClose => ClientCommand::LidClose,
-            };
-
-            let reply = send_command(&addr, command).await?;
-            match reply {
-                ServerReply::Ok { message } => {
-                    println!("ok: {}", message);
+            match action {
+                ClientAction::Ping => send_simple_command(&addr, ClientCommand::Ping).await,
+                ClientAction::Status => send_simple_command(&addr, ClientCommand::Status).await,
+                ClientAction::Text { text } => {
+                    send_simple_command(&addr, ClientCommand::Text { text }).await
                 }
-                ServerReply::Status { status } => {
-                    println!(
-                        "state: {}, mic_muted: {}, lid_open: {}",
-                        status.state, status.mic_muted, status.lid_open
-                    );
+                ClientAction::Voice { path } => {
+                    send_simple_command(&addr, ClientCommand::VoiceFile { path }).await
                 }
-                ServerReply::Error { message } => {
-                    println!("error: {}", message);
+                ClientAction::Audio { path } => {
+                    send_simple_command(&addr, ClientCommand::AudioFile { path }).await
+                }
+                ClientAction::AudioStream {
+                    path,
+                    chunk_bytes,
+                    delay_after_bytes,
+                    delay_ms,
+                } => {
+                    send_audio_stream(&addr, &path, chunk_bytes, delay_after_bytes, delay_ms).await
+                }
+                ClientAction::Button => {
+                    send_simple_command(&addr, ClientCommand::ButtonPress).await
+                }
+                ClientAction::LidOpen => {
+                    send_simple_command(&addr, ClientCommand::LidOpen).await
+                }
+                ClientAction::LidClose => {
+                    send_simple_command(&addr, ClientCommand::LidClose).await
                 }
             }
-            Ok(())
         }
     }
+}
+
+async fn send_simple_command(
+    addr: &str,
+    command: ClientCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reply = send_command(addr, command).await?;
+    match reply {
+        ServerReply::Ok { message } => {
+            println!("ok: {}", message);
+        }
+        ServerReply::Status { status } => {
+            println!(
+                "state: {}, mic_muted: {}, lid_open: {}",
+                status.state, status.mic_muted, status.lid_open
+            );
+        }
+        ServerReply::Error { message } => {
+            println!("error: {}", message);
+        }
+    }
+    Ok(())
 }
 
 async fn send_command(addr: &str, command: ClientCommand) -> Result<ServerReply, String> {
@@ -106,5 +132,88 @@ async fn send_command(addr: &str, command: ClientCommand) -> Result<ServerReply,
         .await
         .map_err(|err| format!("read failed: {}", err))?;
 
+    serde_json::from_str(&line).map_err(|err| format!("invalid reply: {}", err))
+}
+
+async fn send_audio_stream(
+    addr: &str,
+    path: &str,
+    chunk_bytes: usize,
+    delay_after_bytes: usize,
+    delay_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if chunk_bytes == 0 {
+        return Err("chunk_bytes must be > 0".into());
+    }
+    if delay_after_bytes == 0 && delay_ms > 0 {
+        return Err("delay_after_bytes must be > 0 when delay_ms is set".into());
+    }
+
+    let mut file = std::fs::File::open(path)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+
+    let stream = TcpStream::connect(addr).await?;
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    send_stream_command(
+        &mut writer,
+        &mut lines,
+        ClientCommand::AudioStreamStart {
+            format: AudioStreamFormat::Mp3,
+        },
+    )
+    .await?;
+
+    let mut sent_bytes = 0usize;
+    let mut delayed = false;
+    for chunk in data.chunks(chunk_bytes) {
+        if delay_after_bytes > 0 && !delayed && sent_bytes >= delay_after_bytes {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            delayed = true;
+        }
+        send_stream_command(
+            &mut writer,
+            &mut lines,
+            ClientCommand::AudioStreamChunk {
+                data: chunk.to_vec(),
+            },
+        )
+        .await?;
+        sent_bytes = sent_bytes.saturating_add(chunk.len());
+    }
+
+    send_stream_command(
+        &mut writer,
+        &mut lines,
+        ClientCommand::AudioStreamEnd,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn send_stream_command(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::tcp::OwnedReadHalf>>,
+    command: ClientCommand,
+) -> Result<ServerReply, String> {
+    let payload = serde_json::to_string(&command)
+        .map_err(|err| format!("serialize failed: {}", err))?;
+    writer
+        .write_all(payload.as_bytes())
+        .await
+        .map_err(|err| format!("write failed: {}", err))?;
+    writer
+        .write_all(b"\n")
+        .await
+        .map_err(|err| format!("write failed: {}", err))?;
+
+    let line = lines
+        .next_line()
+        .await
+        .map_err(|err| format!("read failed: {}", err))?;
+    let line = line.ok_or_else(|| "server closed connection".to_string())?;
     serde_json::from_str(&line).map_err(|err| format!("invalid reply: {}", err))
 }

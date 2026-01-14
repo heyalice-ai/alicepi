@@ -148,6 +148,19 @@ impl Orchestrator {
                 self.set_state(State::Speaking);
                 let _ = self.voice_output.send(VoiceOutputCommand::PlayAudioFile { path }).await;
             }
+            ClientCommand::AudioStreamStart { format } => {
+                self.set_state(State::Speaking);
+                let _ = self
+                    .voice_output
+                    .send(VoiceOutputCommand::StartStream { format })
+                    .await;
+            }
+            ClientCommand::AudioStreamChunk { data } => {
+                let _ = self.voice_output.send(VoiceOutputCommand::StreamChunk { data }).await;
+            }
+            ClientCommand::AudioStreamEnd => {
+                let _ = self.voice_output.send(VoiceOutputCommand::EndStream).await;
+            }
             ClientCommand::ButtonPress => {
                 self.handle_button_press().await;
             }
