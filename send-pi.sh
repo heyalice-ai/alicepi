@@ -3,6 +3,8 @@
 set -e
 
 # ARCH=aarch64-unknown-linux-musl
+
+DEPLOY_TARGET=${DEPLOY_TARGET:-alicedev1}
 ARCH=aarch64-unknown-linux-gnu
 PROFILE=release
 
@@ -49,4 +51,6 @@ fi
 # cargo build --features=gpio --profile=${PROFILE} --target ${ARCH} "$@"
 cargo build --profile=${PROFILE} --target ${ARCH} "$@"
 
-rsync -rvpP ./target/${ARCH}/${PROFILE}/alicepi alicedev1:alicepi/alicepi-static
+rsync -rvpP ./models ./assets ${DEPLOY_TARGET}:alicepi/
+
+rsync -rvpP ./target/${ARCH}/${PROFILE}/alicepi ${DEPLOY_TARGET}:alicepi/alicepi-static
