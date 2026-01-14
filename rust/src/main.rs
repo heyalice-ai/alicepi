@@ -19,6 +19,7 @@ use crate::protocol::{ClientCommand, ServerReply};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("alicepi=info".parse()?))
         .init();
