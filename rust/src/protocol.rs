@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
     Ping,
+    Status,
     Text { text: String },
     VoiceFile { path: String },
     AudioFile { path: String },
@@ -13,9 +14,17 @@ pub enum ClientCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusSnapshot {
+    pub state: String,
+    pub mic_muted: bool,
+    pub lid_open: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerReply {
     Ok { message: String },
+    Status { status: StatusSnapshot },
     Error { message: String },
 }
 

@@ -8,8 +8,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::config::ServerConfig;
 use crate::protocol::{
-    ClientCommand, ServerReply, SpeechRecCommand, SpeechRecEvent, VoiceInputCommand,
-    VoiceInputEvent, VoiceOutputCommand,
+    ClientCommand, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot, VoiceInputCommand, VoiceInputEvent, VoiceOutputCommand
 };
 use crate::tasks;
 use crate::watchdog::{self, CommandHandle};
@@ -32,6 +31,7 @@ struct Orchestrator {
     speech_rec: CommandHandle<SpeechRecCommand>,
     voice_output: CommandHandle<VoiceOutputCommand>,
     internal_tx: mpsc::Sender<OrchestratorEvent>,
+    status_tx: watch::Sender<StatusSnapshot>,
 }
 
 #[derive(Debug)]
@@ -45,6 +45,7 @@ impl Orchestrator {
         speech_rec: CommandHandle<SpeechRecCommand>,
         voice_output: CommandHandle<VoiceOutputCommand>,
         internal_tx: mpsc::Sender<OrchestratorEvent>,
+        status_tx: watch::Sender<StatusSnapshot>,
     ) -> Self {
         Self {
             state: State::Idle,
@@ -55,6 +56,7 @@ impl Orchestrator {
             speech_rec,
             voice_output,
             internal_tx,
+            status_tx,
         }
     }
 
@@ -110,6 +112,7 @@ impl Orchestrator {
             ClientCommand::Ping => {
                 tracing::info!("client ping");
             }
+            ClientCommand::Status => {}
             ClientCommand::Text { text } => {
                 self.process_text(text).await;
             }
@@ -124,24 +127,22 @@ impl Orchestrator {
                 }
             }
             ClientCommand::AudioFile { path } => {
-                self.state = State::Speaking;
+                self.set_state(State::Speaking);
                 let _ = self.voice_output.send(VoiceOutputCommand::PlayAudioFile { path }).await;
             }
             ClientCommand::ButtonPress => {
                 self.handle_button_press().await;
             }
             ClientCommand::LidOpen => {
-                self.lid_open = true;
-                tracing::info!("lid open");
+                self.set_lid_open(true);
             }
             ClientCommand::LidClose => {
-                self.lid_open = false;
-                tracing::info!("lid closed");
+                self.set_lid_open(false);
                 #[cfg(feature = "lid_control")]
                 {
                     self.cancel_session().await;
-                    self.mic_muted = true;
-                    self.state = State::Idle;
+                    self.set_mic_muted(true);
+                    self.set_state(State::Idle);
                 }
             }
         }
@@ -149,8 +150,8 @@ impl Orchestrator {
 
     async fn handle_button_press(&mut self) {
         self.cancel_session().await;
-        self.mic_muted = false;
-        self.state = State::Listening;
+        self.set_mic_muted(false);
+        self.set_state(State::Listening);
         let _ = self.voice_input.send(VoiceInputCommand::StartListening).await;
     }
 
@@ -158,12 +159,12 @@ impl Orchestrator {
         match event {
             VoiceInputEvent::VadSpeech => {
                 if self.state == State::Idle {
-                    self.state = State::Listening;
+                    self.set_state(State::Listening);
                 }
             }
             VoiceInputEvent::VadSilence => {
-                self.mic_muted = true;
-                self.state = State::Idle;
+                self.set_mic_muted(true);
+                self.set_state(State::Idle);
                 let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
             }
             VoiceInputEvent::AudioChunk(chunk) => {
@@ -189,7 +190,7 @@ impl Orchestrator {
         match event {
             OrchestratorEvent::EngineResponse { generation, response } => {
                 if self.generation.load(Ordering::SeqCst) == generation {
-                    self.state = State::Speaking;
+                    self.set_state(State::Speaking);
                     let _ = self
                         .voice_output
                         .send(VoiceOutputCommand::PlayText { text: response })
@@ -207,7 +208,7 @@ impl Orchestrator {
             return;
         }
 
-        self.state = State::Processing;
+        self.set_state(State::Processing);
         let generation = self.generation.load(Ordering::SeqCst);
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
@@ -225,12 +226,49 @@ impl Orchestrator {
         let _ = self.speech_rec.send(SpeechRecCommand::Reset).await;
         let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
     }
+
+    fn set_state(&mut self, next: State) {
+        if self.state != next {
+            self.state = next;
+            self.publish_status();
+            tracing::info!(state = ?self.state, "state changed");
+        }
+    }
+
+    fn set_mic_muted(&mut self, muted: bool) {
+        if self.mic_muted != muted {
+            self.mic_muted = muted;
+            self.publish_status();
+            tracing::info!(mic_muted = self.mic_muted, "mic state changed");
+        }
+    }
+
+    fn set_lid_open(&mut self, open: bool) {
+        if self.lid_open != open {
+            self.lid_open = open;
+            self.publish_status();
+            tracing::info!(lid_open = self.lid_open, "lid state changed");
+        }
+    }
+
+    fn publish_status(&self) {
+        let _ = self.status_tx.send(StatusSnapshot {
+            state: format!("{:?}", self.state),
+            mic_muted: self.mic_muted,
+            lid_open: self.lid_open,
+        });
+    }
 }
 
 pub async fn run_server(config: ServerConfig) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (client_tx, client_rx) = mpsc::channel(64);
     let (internal_tx, internal_rx) = mpsc::channel(16);
+    let (status_tx, status_rx) = watch::channel(StatusSnapshot {
+        state: format!("{:?}", State::Idle),
+        mic_muted: true,
+        lid_open: true,
+    });
 
     let (voice_events_tx, voice_events_rx) = broadcast::channel(32);
     let (sr_events_tx, sr_events_rx) = broadcast::channel(32);
@@ -283,7 +321,12 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
         shutdown_rx.clone(),
     );
 
-    let server_task = tcp_server(config.bind_addr.clone(), client_tx.clone(), shutdown_rx.clone());
+    let server_task = tcp_server(
+        config.bind_addr.clone(),
+        client_tx.clone(),
+        status_rx.clone(),
+        shutdown_rx.clone(),
+    );
 
     tokio::spawn(async move {
         if let Err(err) = tokio::signal::ctrl_c().await {
@@ -303,6 +346,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
         speech_rec_handle,
         voice_output_handle,
         internal_tx,
+        status_tx,
     );
 
     orchestrator
@@ -321,6 +365,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
 async fn tcp_server(
     bind_addr: String,
     client_tx: mpsc::Sender<ClientCommand>,
+    status_rx: watch::Receiver<StatusSnapshot>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let listener = match TcpListener::bind(&bind_addr).await {
@@ -340,7 +385,8 @@ async fn tcp_server(
                 match accept {
                     Ok((stream, _)) => {
                         let tx = client_tx.clone();
-                        tokio::spawn(async move { handle_connection(stream, tx).await; });
+                        let status = status_rx.clone();
+                        tokio::spawn(async move { handle_connection(stream, tx, status).await; });
                     }
                     Err(err) => {
                         tracing::warn!("accept error: {}", err);
@@ -351,16 +397,25 @@ async fn tcp_server(
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, client_tx: mpsc::Sender<ClientCommand>) {
+async fn handle_connection(
+    mut stream: TcpStream,
+    client_tx: mpsc::Sender<ClientCommand>,
+    status_rx: watch::Receiver<StatusSnapshot>,
+) {
     let (reader, mut writer) = stream.split();
     let mut lines = BufReader::new(reader).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
         let reply = match serde_json::from_str::<ClientCommand>(&line) {
             Ok(command) => {
-                let _ = client_tx.send(command).await;
-                ServerReply::Ok {
-                    message: "accepted".to_string(),
+                if let ClientCommand::Status = command {
+                    let status = status_rx.borrow().clone();
+                    ServerReply::Status { status }
+                } else {
+                    let _ = client_tx.send(command).await;
+                    ServerReply::Ok {
+                        message: "accepted".to_string(),
+                    }
                 }
             }
             Err(err) => ServerReply::Error {

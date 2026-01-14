@@ -47,6 +47,17 @@ cargo build --release --target x86_64-unknown-linux-musl
 cargo build --release --target aarch64-unknown-linux-musl
 ```
 
+Build aarch64-unknown-linux-gnu on Fedora (for ALSA, etc.):
+
+```
+sudo dnf install gcc-aarch64-linux-gnu glibc-devel.aarch64 alsa-lib-devel.aarch64 pkgconf-pkg-config
+SYSROOT="$(aarch64-linux-gnu-gcc -print-sysroot)"
+export PKG_CONFIG_SYSROOT_DIR="${SYSROOT}"
+export PKG_CONFIG_LIBDIR="${SYSROOT}/usr/lib64/pkgconfig:${SYSROOT}/usr/share/pkgconfig"
+export PKG_CONFIG_PATH="${PKG_CONFIG_LIBDIR}"
+cargo build --release --target aarch64-unknown-linux-gnu
+```
+
 Native x86_64 Linux build:
 
 ```

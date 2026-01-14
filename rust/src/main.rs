@@ -40,7 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Client { addr, action } => {
             let command = match action {
-                ClientAction::Ping => ClientCommand::Ping,
+    ClientAction::Ping => ClientCommand::Ping,
+    ClientAction::Status => ClientCommand::Status,
                 ClientAction::Text { text } => ClientCommand::Text { text },
                 ClientAction::Voice { path } => ClientCommand::VoiceFile { path },
                 ClientAction::Audio { path } => ClientCommand::AudioFile { path },
@@ -53,6 +54,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match reply {
                 ServerReply::Ok { message } => {
                     println!("ok: {}", message);
+                }
+                ServerReply::Status { status } => {
+                    println!(
+                        "state: {}, mic_muted: {}, lid_open: {}",
+                        status.state, status.mic_muted, status.lid_open
+                    );
                 }
                 ServerReply::Error { message } => {
                     println!("error: {}", message);

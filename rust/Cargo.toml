@@ -3,6 +3,10 @@ name = "alicepi"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+debug = true
+strip = false
+
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
 serde = { version = "1.0.210", features = ["derive"] }
@@ -13,9 +17,18 @@ tokio-util = "0.7.12"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["fmt", "env-filter"] }
 
+bytemuck = "1.17.0"
+cpal = "0.15.3"
+hound = "3.5.1"
+ndarray = "0.17.2"
+ort = "2.0.0-rc.11"
+rodio = "0.19.0"
+whisper-rs = "0.15.1"
+
 rppal = { version = "0.19.0", optional = true }
 
 [features]
 default = []
 gpio = ["dep:rppal"]
 lid_control = []
+hailo = []

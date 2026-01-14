@@ -32,8 +32,12 @@ pub enum Command {
 #[derive(Subcommand, Debug)]
 pub enum ClientAction {
     Ping,
+    #[command(about = "Fetch current runtime status (state, mic, lid)")]
+    Status,
     Text { text: String },
+    #[command(about = "Inject an audio file into the voice input pipeline (VAD -> SR -> response)")]
     Voice { path: String },
+    #[command(about = "Play an audio file directly through voice output (no recognition)")]
     Audio { path: String },
     Button,
     LidOpen,
