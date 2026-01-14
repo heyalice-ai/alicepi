@@ -33,7 +33,7 @@ pub async fn run(
             }
         };
 
-        let mut button: Option<rppal::gpio::InputPin> = match config.button_pin {
+        let button: Option<rppal::gpio::InputPin> = match config.button_pin {
             Some(pin) => match gpio.get(pin).map(|p| p.into_input_pullup()) {
                 Ok(pin) => Some(pin),
                 Err(err) => {
@@ -44,7 +44,7 @@ pub async fn run(
             None => None,
         };
 
-        let mut lid: Option<rppal::gpio::InputPin> = match config.lid_pin {
+        let lid: Option<rppal::gpio::InputPin> = match config.lid_pin {
             Some(pin) => match gpio.get(pin).map(|p| p.into_input_pullup()) {
                 Ok(pin) => Some(pin),
                 Err(err) => {
