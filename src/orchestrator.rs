@@ -260,7 +260,9 @@ impl Orchestrator {
                                                             bytes.len()
                                                         );
                                                         logged_first_chunk = true;
-                                                    } else if voice_output
+                                                    }
+                                                    
+                                                    if voice_output
                                                         .send(VoiceOutputCommand::StreamChunk {
                                                             data: bytes.to_vec(),
                                                         })
