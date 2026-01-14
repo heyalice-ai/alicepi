@@ -1,63 +1,86 @@
 # AlicePi
 
-AlicePi is the edge computing component of the HeyAlice smart speaker ecosystem, running on Raspberry Pi. It interacts with the cloud services (hosted on an Nvidia DGX Spark) to provide voice assistance.
+AlicePi is the Rust runtime for the HeyAlice smart speaker on Raspberry Pi. It is a single Tokio-driven
+process that runs an orchestrator, audio tasks, and local/cloud engines in one binary.
 
 ## Architecture
 
-The system is designed as a microservices architecture. A central service orchestrates the communication between various functional modules.
+The runtime is a single process with internal async tasks, not a set of containerized microservices.
 
-### Service Modules
+*   **Orchestrator**: Owns the state machine (`Idle`, `Listening`, `Processing`, `Speaking`) and applies
+    prioritization rules for button/lid events vs. text/audio input.
+*   **Engine**: Local and cloud backends under `src/engine/` for handling inference/session flow.
+*   **Tasks**: Tokio tasks for voice input, speech recognition, voice output, and GPIO events.
+*   **Watchdog**: Supervises task heartbeats and restarts stalled audio/SR tasks.
 
-*   **Orchestrator**: The primary control service. It manages the application state machine, handles prioritization logic (e.g., button interrupts vs. voice activation), and coordinates inter-service communication. It also manages session state with the remote inference engine.
-*   **Voice Input**: A service responsible for capturing raw audio from the microphone. It implements Voice Activity Detection (VAD) to filter silence and streams PCM data to the Speech Recognition service. It can also ingest audio from files for testing.
-*   **Voice Output**: A dedicated service for audio playback. It runs in an isolated container with direct hardware access (ALSA) to play audio buffers received from the Orchestrator.
-*   **Speech Recognition (SR)**: A local inference service running OpenAI Whisper. It consumes the PCM stream from the Voice Input service and outputs transcribed text streams with delimiters.
-*   **Buttons**: A hardware interface service. It monitors GPIO pins for physical button presses, debounces the signals, and transmits semantic events (e.g., `RESET_ACTION`) to the Orchestrator.
-*   **Onboarding**: A network management service. It handles the initial connection to the network and discovery of the upstream Spark service.
-*   **Updater**: A lifecycle management service. It monitors the Docker containers and performs updates by pulling new images from the registry.
+## Project Layout
 
-## Development
+*   `src/main.rs`: CLI entrypoint and runtime bootstrapping.
+*   `src/cli.rs`: Client/server subcommands.
+*   `src/orchestrator.rs`: State machine + TCP JSON command endpoint.
+*   `src/protocol.rs`: Wire types for commands, responses, and status snapshots.
+*   `src/engine/`: Local/cloud engine implementations and session handling.
+*   `src/tasks/`: Voice input, speech recognition, voice output, and GPIO tasks.
+*   `src/watchdog.rs`: Heartbeat monitoring and task restarts.
+*   `.cargo/config.toml`: Cross-compilation linker/flags.
 
-The project uses Docker for containerization and microservices isolation.
+## Quick Start
 
-### Prerequisites
+Server:
 
-*   Docker & Docker Compose
-*   Raspberry Pi 4 or 5 (target hardware)
-
-### Building and Running
-1. Make sure you have Docker installed on your Raspberry Pi 5.
-When using raspbian, you can install it via:
-    ```bash
-    sudo apt-get update
-    sudo apt-get install docker.io docker-cli docker-compose
-    ```
-2. Clone the repository:
-    ```bash
-    git clone https://github.com/heyalice-ai/alicepi.git
-    cd alicepi
-    ```
-3. Start the services using Docker Compose:
-    ```bash
-    docker compose up orchestrator voice-input voice-output speech-rec
-    ```
-
-4. To bring down the services, run:
-    ```bash
-    docker compose down
-    ```
-
-If you want to make any changes to the codebase when developing, you can rebuild the images with:
-```bash
-docker compose build
+```
+cargo run --bin alicepi -- server --bind 0.0.0.0:7878
 ```
 
-Or directly using the --build flag when bringing up the services:
-```bash
-docker compose up --build orchestrator
+Client commands:
+
+```
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 ping
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 button
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 text "hello"
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 voice ./samples/utterance.wav
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 audio ./samples/output.wav
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 lid-open
+cargo run --bin alicepi -- client --addr 127.0.0.1:7878 lid-close
 ```
 
-### Deployment
+## GPIO
 
-*   **Container Registry**: GitHub Container Registry (GHCR).
-*   **CI/CD**: GitHub Actions are used to build and push container images.
+Enable GPIO input support on Raspberry Pi:
+
+```
+cargo run --features gpio -- server --gpio-button 17 --gpio-lid 27
+```
+
+The lid behavior is feature-flagged for future expansion:
+
+```
+cargo run --features lid_control -- server
+```
+
+## Cross-Compilation
+
+Build static binaries with musl:
+
+```
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+cargo build --release --target aarch64-unknown-linux-musl
+```
+
+Build aarch64-unknown-linux-gnu on Fedora (for ALSA, etc.):
+
+```
+sudo dnf install gcc-aarch64-linux-gnu glibc-devel.aarch64 alsa-lib-devel.aarch64 pkgconf-pkg-config
+SYSROOT="$(aarch64-linux-gnu-gcc -print-sysroot)"
+export PKG_CONFIG_SYSROOT_DIR="${SYSROOT}"
+export PKG_CONFIG_LIBDIR="${SYSROOT}/usr/lib64/pkgconfig:${SYSROOT}/usr/share/pkgconfig"
+export PKG_CONFIG_PATH="${PKG_CONFIG_LIBDIR}"
+cargo build --release --target aarch64-unknown-linux-gnu
+```
+
+Native x86_64 Linux build:
+
+```
+cargo build --release
+```

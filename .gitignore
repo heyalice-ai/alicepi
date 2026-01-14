@@ -1,12 +1,5 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
+# Rust
+/target/
 
 # IDE
 .vscode/
@@ -19,6 +12,3 @@ build/
 .venv/
 venv/
 ENV/
-
-# Temporary/manual test files
-src/voice_input/test_hangover.py
