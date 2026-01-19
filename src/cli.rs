@@ -24,6 +24,8 @@ pub enum Command {
         gpio_button: Option<u8>,
         #[arg(long)]
         gpio_lid: Option<u8>,
+        #[arg(long, value_name = "DIR")]
+        save_request_wavs: Option<String>,
     },
     Client {
         #[arg(long, default_value_t = ServerConfig::default_bind())]

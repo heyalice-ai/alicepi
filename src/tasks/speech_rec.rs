@@ -1,6 +1,6 @@
 use std::env;
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytemuck::cast_slice;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -151,6 +151,7 @@ pub async fn run(
     events: broadcast::Sender<SpeechRecEvent>,
     heartbeat: Heartbeat,
     mut shutdown: watch::Receiver<bool>,
+    save_request_wavs_dir: Option<PathBuf>,
 ) {
     let config = SpeechRecConfig::from_env();
     if let Err(err) = model_download::ensure_whisper_model(&config.model).await {
@@ -223,6 +224,16 @@ pub async fn run(
                         let audio: Vec<i16> = cast_slice(&buffer[..aligned_len]).to_vec();
                         buffer.clear();
                         request_id = request_id.wrapping_add(1);
+                        if let Some(save_dir) = save_request_wavs_dir.clone() {
+                            let audio_copy = audio.clone();
+                            spawn_request_wav_save(
+                                save_dir,
+                                request_id,
+                                config.sample_rate,
+                                config.channels,
+                                audio_copy,
+                            );
+                        }
                         let request = TranscribeRequest {
                             request_id,
                             generation,
@@ -335,6 +346,60 @@ fn resolve_model_path(spec: &str) -> Result<String, String> {
     }
 
     Ok(chosen.to_string())
+}
+
+fn spawn_request_wav_save(
+    save_dir: PathBuf,
+    request_id: u64,
+    sample_rate: u32,
+    channels: u16,
+    audio: Vec<i16>,
+) {
+    tokio::task::spawn_blocking(move || {
+        if let Err(err) =
+            write_request_wav(&save_dir, request_id, sample_rate, channels, &audio)
+        {
+            tracing::warn!("failed to save request wav {}: {}", request_id, err);
+        }
+    });
+}
+
+fn write_request_wav(
+    save_dir: &Path,
+    request_id: u64,
+    sample_rate: u32,
+    channels: u16,
+    audio: &[i16],
+) -> Result<(), String> {
+    if audio.is_empty() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(save_dir)
+        .map_err(|err| format!("create dir {} failed: {}", save_dir.display(), err))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let filename = format!("request_{:06}_{}.wav", request_id, timestamp);
+    let path = save_dir.join(filename);
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&path, spec)
+        .map_err(|err| format!("open wav {} failed: {}", path.display(), err))?;
+    for sample in audio {
+        writer
+            .write_sample(*sample)
+            .map_err(|err| format!("write wav {} failed: {}", path.display(), err))?;
+    }
+    writer
+        .finalize()
+        .map_err(|err| format!("finalize wav {} failed: {}", path.display(), err))?;
+    Ok(())
 }
 
 fn env_u32(key: &str, default: u32) -> u32 {

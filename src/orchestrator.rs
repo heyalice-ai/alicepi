@@ -426,6 +426,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
     let (speech_rec_tx, speech_rec_rx) = mpsc::channel(32);
     let speech_rec_handle = CommandHandle::new(speech_rec_tx.clone());
 
+    let save_request_wavs_dir = config.save_request_wavs_dir.clone();
     let speech_rec_supervisor = watchdog::supervise(
         "speech_rec",
         speech_rec_handle.clone(),
@@ -435,7 +436,10 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
         shutdown_rx.clone(),
         move |rx, heartbeat, shutdown| {
             let events = sr_events_tx.clone();
-            async move { tasks::speech_rec::run(rx, events, heartbeat, shutdown).await }
+            let save_request_wavs_dir = save_request_wavs_dir.clone();
+            async move {
+                tasks::speech_rec::run(rx, events, heartbeat, shutdown, save_request_wavs_dir).await
+            }
         },
     );
 

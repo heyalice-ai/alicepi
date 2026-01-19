@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_stream,
             gpio_button,
             gpio_lid,
+            save_request_wavs,
         } => {
             let stream_audio = if stream {
                 true
@@ -49,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gpio_button_pin: gpio_button,
                 gpio_lid_pin: gpio_lid,
                 stream_audio,
+                save_request_wavs_dir: save_request_wavs.map(std::path::PathBuf::from),
             };
             orchestrator::run_server(config).await.map_err(|err| err.into())
         }
