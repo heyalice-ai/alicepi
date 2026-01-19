@@ -164,6 +164,9 @@ impl Orchestrator {
             ClientCommand::ButtonPress => {
                 self.handle_button_press().await;
             }
+            ClientCommand::ButtonRelease => {
+                self.handle_button_release().await;
+            }
             ClientCommand::LidOpen => {
                 self.set_lid_open(true);
                 self.session.start_new();
@@ -184,18 +187,14 @@ impl Orchestrator {
         let _ = self.voice_input.send(VoiceInputCommand::StartListening).await;
     }
 
+    async fn handle_button_release(&mut self) {
+        self.set_mic_muted(true);
+        self.set_state(State::Idle);
+        let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
+    }
+
     async fn handle_voice_event(&mut self, event: VoiceInputEvent) {
         match event {
-            VoiceInputEvent::VadSpeech => {
-                if self.state == State::Idle {
-                    self.set_state(State::Listening);
-                }
-            }
-            VoiceInputEvent::VadSilence => {
-                self.set_mic_muted(true);
-                self.set_state(State::Idle);
-                let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
-            }
             VoiceInputEvent::AudioChunk(chunk) => {
                 let _ = self.speech_rec.send(SpeechRecCommand::AudioChunk(chunk)).await;
             }

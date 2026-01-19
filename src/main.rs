@@ -75,8 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     send_audio_stream(&addr, &path, chunk_bytes, delay_after_bytes, delay_ms).await
                 }
-                ClientAction::Button => {
+                ClientAction::ButtonPress => {
                     send_simple_command(&addr, ClientCommand::ButtonPress).await
+                }
+                ClientAction::ButtonRelease => {
+                    send_simple_command(&addr, ClientCommand::ButtonRelease).await
                 }
                 ClientAction::LidOpen => {
                     send_simple_command(&addr, ClientCommand::LidOpen).await

@@ -55,7 +55,8 @@ pub enum ClientAction {
         #[arg(long, default_value_t = 0)]
         delay_ms: u64,
     },
-    Button,
+    ButtonPress,
+    ButtonRelease,
     LidOpen,
     LidClose,
 }

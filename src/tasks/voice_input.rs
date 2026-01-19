@@ -1,17 +1,13 @@
 use std::env;
-use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytemuck::cast_slice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use ndarray::{Array2, ArrayD, IxDyn};
-use ort::value::Tensor;
 use tokio::fs;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time;
 
-use crate::model_download;
 use crate::protocol::{VoiceInputCommand, VoiceInputEvent};
 use crate::watchdog::Heartbeat;
 
@@ -20,12 +16,8 @@ struct VoiceInputConfig {
     stream_sample_rate: u32,
     stream_channels: usize,
     chunk_size: usize,
-    vad_threshold: f32,
-    silence_duration: Duration,
-    start_listen_grace: Duration,
     capture_device: Option<String>,
     mock_file: Option<String>,
-    vad_model: Option<String>,
 }
 
 impl VoiceInputConfig {
@@ -33,44 +25,19 @@ impl VoiceInputConfig {
         let stream_sample_rate = env_u32("STREAM_SAMPLE_RATE", 48_000);
         let stream_channels = env_usize("STREAM_CHANNELS", 2);
         let chunk_size = env_usize("CHUNK_SIZE", 512);
-        let vad_threshold = env_f32("VAD_THRESHOLD", 0.5);
-        let silence_ms = env_u64("SILENCE_DURATION_MS", 500);
-        let start_grace_ms = env_u64("START_LISTEN_GRACE_MS", 2000);
         let capture_device = env::var("CAPTURE_DEVICE")
             .ok()
             .or_else(|| env::var("AUDIO_CARD").ok());
         let mock_file = env::var("MOCK_AUDIO_FILE").ok();
-        let vad_model = env::var("SILERO_VAD_MODEL")
-            .ok()
-            .and_then(|value| {
-                let trimmed = value.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            });
 
         Self {
             stream_sample_rate,
             stream_channels,
             chunk_size,
-            vad_threshold,
-            silence_duration: Duration::from_millis(silence_ms),
-            start_listen_grace: Duration::from_millis(start_grace_ms),
             capture_device,
             mock_file,
-            vad_model,
         }
     }
-}
-
-fn resolve_vad_model_path(config: &VoiceInputConfig) -> PathBuf {
-    config
-        .vad_model
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| model_download::default_assets_path("silero_vad.onnx"))
 }
 
 struct CaptureStream {
@@ -91,273 +58,6 @@ impl Drop for CaptureStream {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VadStatus {
-    Silence,
-    Speech,
-    Hangover,
-}
-
-impl VadStatus {
-    fn label(self) -> &'static str {
-        match self {
-            VadStatus::Silence => "SILENCE",
-            VadStatus::Speech => "SPEECH_DETECTED",
-            VadStatus::Hangover => "SPEECH_HANGOVER",
-        }
-    }
-}
-
-enum VadEngine {
-    Rms,
-    Silero(SileroVad),
-}
-
-impl std::fmt::Debug for VadEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VadEngine::Rms => f.write_str("VadEngine::Rms"),
-            VadEngine::Silero(_) => f.write_str("VadEngine::Silero"),
-        }
-    }
-}
-
-impl VadEngine {
-    fn new(config: &VoiceInputConfig) -> Self {
-        let model_path = resolve_vad_model_path(config);
-        if config.stream_sample_rate != 16_000 {
-            tracing::warn!("silero VAD requires 16kHz audio; falling back to RMS VAD");
-            return VadEngine::Rms;
-        }
-        if model_path.exists() {
-            let model_path_str = model_path.to_string_lossy();
-            match SileroVad::new(&model_path_str, config.stream_sample_rate) {
-                Ok(vad) => {
-                    tracing::info!("silero VAD enabled with {}", model_path.display());
-                    VadEngine::Silero(vad)
-                }
-                Err(err) => {
-                    tracing::warn!("silero VAD init failed ({}); falling back to RMS", err);
-                    VadEngine::Rms
-                }
-            }
-        } else {
-            tracing::warn!(
-                "silero VAD model not found at {}; falling back to RMS",
-                model_path.display()
-            );
-            VadEngine::Rms
-        }
-    }
-
-    fn reset(&mut self) {
-        if let VadEngine::Silero(vad) = self {
-            vad.reset();
-        }
-    }
-
-    fn is_speech(&mut self, chunk: &[i16], threshold: f32) -> bool {
-        match self {
-            VadEngine::Rms => rms_is_speech(chunk, threshold),
-            VadEngine::Silero(vad) => match vad.is_speech(chunk, threshold) {
-                Ok(value) => value,
-                Err(err) => {
-                    tracing::warn!("silero VAD inference error: {}", err);
-                    rms_is_speech(chunk, threshold)
-                }
-            },
-        }
-    }
-}
-
-#[derive(Debug)]
-struct VadTracker {
-    engine: VadEngine,
-    threshold: f32,
-    hangover: Duration,
-    start_grace: Duration,
-    last_status: VadStatus,
-    last_speech: Option<Instant>,
-    start_grace_until: Option<Instant>,
-}
-
-impl VadTracker {
-    fn new(engine: VadEngine, threshold: f32, hangover: Duration, start_grace: Duration) -> Self {
-        Self {
-            engine,
-            threshold,
-            hangover,
-            start_grace,
-            last_status: VadStatus::Silence,
-            last_speech: None,
-            start_grace_until: None,
-        }
-    }
-
-    fn begin_listen(&mut self) {
-        self.reset();
-        if !self.start_grace.is_zero() {
-            self.start_grace_until = Some(Instant::now() + self.start_grace);
-        }
-    }
-
-    fn reset(&mut self) {
-        self.last_status = VadStatus::Silence;
-        self.last_speech = None;
-        self.start_grace_until = None;
-        self.engine.reset();
-    }
-
-    fn transition(&mut self, next: VadStatus) -> bool {
-        if self.last_status == next {
-            return false;
-        }
-        tracing::info!("VAD status -> {}", next.label());
-        self.last_status = next;
-        true
-    }
-
-    fn force_silence(&mut self, events: &broadcast::Sender<VoiceInputEvent>) {
-        if self.transition(VadStatus::Silence) {
-            let _ = events.send(VoiceInputEvent::AudioEnded);
-            let _ = events.send(VoiceInputEvent::VadSilence);
-        }
-        self.reset();
-    }
-
-    fn process_chunk(&mut self, chunk: &[i16], events: &broadcast::Sender<VoiceInputEvent>) {
-        if chunk.is_empty() {
-            return;
-        }
-
-        let now = Instant::now();
-        let is_speech = self.engine.is_speech(chunk, self.threshold);
-
-        if is_speech {
-            self.start_grace_until = None;
-            if self.transition(VadStatus::Speech) {
-                let _ = events.send(VoiceInputEvent::VadSpeech);
-            }
-            self.last_speech = Some(now);
-            let _ = events.send(VoiceInputEvent::AudioChunk(cast_slice(chunk).to_vec()));
-            return;
-        }
-
-        if let Some(until) = self.start_grace_until {
-            if now < until {
-                self.transition(VadStatus::Hangover);
-                let _ = events.send(VoiceInputEvent::AudioChunk(cast_slice(chunk).to_vec()));
-                return;
-            }
-            self.start_grace_until = None;
-            if self.transition(VadStatus::Silence) {
-                let _ = events.send(VoiceInputEvent::AudioEnded);
-                let _ = events.send(VoiceInputEvent::VadSilence);
-            }
-            self.reset();
-            return;
-        }
-
-        if let Some(last) = self.last_speech {
-            if now.duration_since(last) < self.hangover {
-                self.transition(VadStatus::Hangover);
-                let _ = events.send(VoiceInputEvent::AudioChunk(cast_slice(chunk).to_vec()));
-            } else {
-                if self.transition(VadStatus::Silence) {
-                    let _ = events.send(VoiceInputEvent::AudioEnded);
-                    let _ = events.send(VoiceInputEvent::VadSilence);
-                }
-                self.reset();
-            }
-        } else if self.last_status != VadStatus::Silence {
-            let _ = events.send(VoiceInputEvent::VadSilence);
-            self.transition(VadStatus::Silence);
-        }
-    }
-}
-
-const SILERO_FRAME_SIZE: usize = 480;
-
-struct SileroVad {
-    session: ort::session::Session,
-    sample_rate: ArrayD<i64>,
-    state: ArrayD<f32>,
-}
-
-impl SileroVad {
-    fn new(model_path: &str, sample_rate: u32) -> Result<Self, String> {
-        let session = ort::session::Session::builder()
-            .map_err(|err| err.to_string())?
-            .commit_from_file(model_path)
-            .map_err(|err| err.to_string())?;
-        let state: ArrayD<f32> = ArrayD::zeros(IxDyn(&[2, 1, 128]));
-        let sample_rate = ArrayD::from_shape_vec(IxDyn(&[1]), vec![sample_rate as i64])
-            .map_err(|err| err.to_string())?;
-        Ok(Self {
-            session,
-            sample_rate,
-            state,
-        })
-    }
-
-    fn reset(&mut self) {
-        self.state.fill(0.0);
-    }
-
-    fn is_speech(&mut self, chunk: &[i16], threshold: f32) -> Result<bool, String> {
-        if chunk.is_empty() {
-            return Ok(false);
-        }
-
-        for frame in chunk.chunks(SILERO_FRAME_SIZE) {
-            let prob = self.frame_probability(frame)?;
-            if prob >= threshold {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
-    fn frame_probability(&mut self, frame: &[i16]) -> Result<f32, String> {
-        let mut data: Vec<f32> = frame
-            .iter()
-            .map(|&sample| sample as f32 / i16::MAX as f32)
-            .collect();
-        data.resize(SILERO_FRAME_SIZE, 0.0);
-
-        let frame = Array2::from_shape_vec((1, SILERO_FRAME_SIZE), data)
-            .map_err(|err| err.to_string())?;
-        let frame_tensor = Tensor::from_array(frame).map_err(|err| err.to_string())?;
-        let state_tensor =
-            Tensor::from_array(std::mem::take(&mut self.state)).map_err(|err| err.to_string())?;
-        let sample_rate_tensor =
-            Tensor::from_array(self.sample_rate.clone()).map_err(|err| err.to_string())?;
-        let outputs = self
-            .session
-            .run(ort::inputs![frame_tensor, state_tensor, sample_rate_tensor])
-            .map_err(|err| err.to_string())?;
-
-        let new_state = outputs
-            .get("stateN")
-            .ok_or_else(|| "silero VAD missing stateN output".to_string())?
-            .try_extract_tensor::<f32>()
-            .map_err(|err| err.to_string())?;
-        self.state = ArrayD::from_shape_vec(new_state.0.to_ixdyn(), new_state.1.to_vec())
-            .map_err(|err| err.to_string())?;
-
-        let raw = outputs
-            .get("output")
-            .ok_or_else(|| "silero VAD missing output".to_string())?
-            .try_extract_tensor::<f32>()
-            .map_err(|err| err.to_string())?;
-        raw.1
-            .first()
-            .copied()
-            .ok_or_else(|| "silero VAD output missing probability".to_string())
     }
 }
 
@@ -519,19 +219,6 @@ fn f32_to_i16(input: &[f32]) -> Vec<i16> {
         .collect()
 }
 
-fn rms_is_speech(chunk: &[i16], threshold: f32) -> bool {
-    if chunk.is_empty() {
-        return false;
-    }
-    let mut sum = 0.0f32;
-    for &sample in chunk {
-        let norm = sample as f32 / i16::MAX as f32;
-        sum += norm * norm;
-    }
-    let rms = (sum / chunk.len() as f32).sqrt();
-    rms > threshold
-}
-
 pub async fn run(
     mut rx: mpsc::Receiver<VoiceInputCommand>,
     events: broadcast::Sender<VoiceInputEvent>,
@@ -539,12 +226,6 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let config = VoiceInputConfig::from_env();
-    let vad_model_path = resolve_vad_model_path(&config);
-    if config.stream_sample_rate == 16_000 {
-        if let Err(err) = model_download::ensure_silero_vad(&vad_model_path).await {
-            tracing::warn!("silero VAD download failed: {}", err);
-        }
-    }
     let (mut capture, mut pipeline) = match start_capture(&config) {
         Ok(value) => value,
         Err(err) => {
@@ -554,19 +235,14 @@ pub async fn run(
     };
 
     let mut listening = false;
-    let vad_engine = VadEngine::new(&config);
-    let mut vad = VadTracker::new(
-        vad_engine,
-        config.vad_threshold,
-        config.silence_duration,
-        config.start_listen_grace,
-    );
     let mut tick = time::interval(Duration::from_millis(500));
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
-                vad.force_silence(&events);
+                if listening {
+                    flush_audio(&mut pipeline, &events);
+                }
                 break;
             }
             _ = tick.tick() => {
@@ -576,12 +252,13 @@ pub async fn run(
                 match command {
                     Some(VoiceInputCommand::StartListening) => {
                         listening = true;
-                        vad.begin_listen();
                         pipeline.pending.clear();
                     }
                     Some(VoiceInputCommand::StopListening) => {
+                        if listening {
+                            flush_audio(&mut pipeline, &events);
+                        }
                         listening = false;
-                        vad.reset();
                         pipeline.pending.clear();
                     }
                     Some(VoiceInputCommand::InjectAudioFile { path }) => {
@@ -592,7 +269,9 @@ pub async fn run(
                         }
                     }
                     Some(VoiceInputCommand::Shutdown) | None => {
-                        vad.force_silence(&events);
+                        if listening {
+                            flush_audio(&mut pipeline, &events);
+                        }
                         break;
                     }
                 }
@@ -602,10 +281,13 @@ pub async fn run(
                     if listening {
                         let chunks = pipeline.push_samples(&samples, capture.channels);
                         for chunk in chunks {
-                            vad.process_chunk(&chunk, &events);
+                            send_chunk(&events, &chunk);
                         }
                     }
                 } else {
+                    if listening {
+                        flush_audio(&mut pipeline, &events);
+                    }
                     break;
                 }
             }
@@ -845,13 +527,6 @@ async fn inject_audio_file(
         hound::WavReader::new(std::io::Cursor::new(bytes)).map_err(|err| err.to_string())?;
     let spec = reader.spec();
 
-    let vad_engine = VadEngine::new(config);
-    let mut vad = VadTracker::new(
-        vad_engine,
-        config.vad_threshold,
-        config.silence_duration,
-        config.start_listen_grace,
-    );
     let mut pipeline = AudioPipeline::new(
         spec.sample_rate,
         spec.channels as usize,
@@ -867,7 +542,7 @@ async fn inject_audio_file(
         if scratch.len() >= config.chunk_size * spec.channels as usize {
             let chunks = pipeline.push_samples(&scratch, spec.channels as usize);
             for chunk in chunks {
-                vad.process_chunk(&chunk, events);
+                send_chunk(events, &chunk);
             }
             scratch.clear();
             tokio::time::sleep(Duration::from_millis(sleep_ms as u64)).await;
@@ -877,14 +552,14 @@ async fn inject_audio_file(
     if !scratch.is_empty() {
         let chunks = pipeline.push_samples(&scratch, spec.channels as usize);
         for chunk in chunks {
-            vad.process_chunk(&chunk, events);
+            send_chunk(events, &chunk);
         }
     }
 
     if let Some(leftover) = pipeline.finish() {
-        vad.process_chunk(&leftover, events);
+        send_chunk(events, &leftover);
     }
-    vad.force_silence(events);
+    let _ = events.send(VoiceInputEvent::AudioEnded);
     Ok(())
 }
 
@@ -931,14 +606,20 @@ fn env_u32(key: &str, default: u32) -> u32 {
     env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-fn env_u64(key: &str, default: u64) -> u64 {
-    env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
-}
-
 fn env_usize(key: &str, default: usize) -> usize {
     env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-fn env_f32(key: &str, default: f32) -> f32 {
-    env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+fn send_chunk(events: &broadcast::Sender<VoiceInputEvent>, chunk: &[i16]) {
+    if chunk.is_empty() {
+        return;
+    }
+    let _ = events.send(VoiceInputEvent::AudioChunk(cast_slice(chunk).to_vec()));
+}
+
+fn flush_audio(pipeline: &mut AudioPipeline, events: &broadcast::Sender<VoiceInputEvent>) {
+    if let Some(leftover) = pipeline.finish() {
+        send_chunk(events, &leftover);
+    }
+    let _ = events.send(VoiceInputEvent::AudioEnded);
 }

@@ -12,6 +12,7 @@ pub enum ClientCommand {
     AudioStreamChunk { data: Vec<u8> },
     AudioStreamEnd,
     ButtonPress,
+    ButtonRelease,
     LidOpen,
     LidClose,
 }
@@ -33,8 +34,6 @@ pub enum ServerReply {
 
 #[derive(Debug, Clone)]
 pub enum VoiceInputEvent {
-    VadSpeech,
-    VadSilence,
     AudioChunk(Vec<u8>),
     AudioEnded,
 }

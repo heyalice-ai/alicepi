@@ -71,6 +71,8 @@ pub async fn run(
                             last_button_level = Some(level);
                             if level == Level::Low {
                                 let _ = sender.send(ClientCommand::ButtonPress).await;
+                            } else {
+                                let _ = sender.send(ClientCommand::ButtonRelease).await;
                             }
                         }
                     }
