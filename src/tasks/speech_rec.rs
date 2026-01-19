@@ -19,6 +19,7 @@ struct SpeechRecConfig {
     compute_type: String,
     backend: String,
     threads: usize,
+    hangover_silence: Duration,
 }
 
 impl SpeechRecConfig {
@@ -34,6 +35,7 @@ impl SpeechRecConfig {
                 .map(|count| count.get())
                 .unwrap_or(1),
         );
+        let hangover_ms = env_u64("SILENCE_DURATION_MS", 500);
         Self {
             sample_rate,
             channels,
@@ -41,6 +43,7 @@ impl SpeechRecConfig {
             compute_type,
             backend,
             threads,
+            hangover_silence: Duration::from_millis(hangover_ms),
         }
     }
 }
@@ -216,6 +219,14 @@ pub async fn run(
                         chunk_count = chunk_count.saturating_add(1);
                     }
                     Some(SpeechRecCommand::AudioEnded) => {
+                        if !buffer.is_empty() {
+                            append_hangover_silence(
+                                &mut buffer,
+                                config.sample_rate,
+                                config.channels,
+                                config.hangover_silence,
+                            );
+                        }
                         let aligned_len = buffer.len() - (buffer.len() % 2);
                         if aligned_len == 0 {
                             buffer.clear();
@@ -410,6 +421,30 @@ fn env_u16(key: &str, default: u16) -> u16 {
     env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+fn env_u64(key: &str, default: u64) -> u64 {
+    env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 fn env_usize(key: &str, default: usize) -> usize {
     env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn append_hangover_silence(
+    buffer: &mut Vec<u8>,
+    sample_rate: u32,
+    channels: u16,
+    hangover: Duration,
+) {
+    if hangover.is_zero() {
+        return;
+    }
+    let samples = (sample_rate as u64)
+        .saturating_mul(hangover.as_millis() as u64)
+        .saturating_div(1000)
+        .saturating_mul(channels as u64);
+    if samples == 0 {
+        return;
+    }
+    let bytes = samples.saturating_mul(2) as usize;
+    buffer.resize(buffer.len().saturating_add(bytes), 0);
 }
