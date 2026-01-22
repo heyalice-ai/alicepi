@@ -20,6 +20,8 @@ pub enum Command {
         stream: bool,
         #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with = "stream")]
         no_stream: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        download_models: bool,
         #[arg(long)]
         gpio_button: Option<u8>,
         #[arg(long)]

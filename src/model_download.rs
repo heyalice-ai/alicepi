@@ -20,6 +20,10 @@ const MODELS: &[ModelSpec] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
     },
     ModelSpec {
+        filename: "ggml-base.en.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+    },
+    ModelSpec {
         filename: "silero_vad.onnx",
         url: "https://raw.githubusercontent.com/Sameam/whisper_rust/main/models/silero_vad.onnx",
     },
@@ -39,7 +43,7 @@ pub async fn ensure_whisper_model(spec: &str) -> Result<(), String> {
     }
 
     let chosen = parse_model_choice(spec)?;
-    let chosen_path = PathBuf::from(&chosen);
+    let chosen_path = PathBuf::from(default_models_path(&chosen));
     if chosen_path.exists() {
         return Ok(());
     }
@@ -47,15 +51,16 @@ pub async fn ensure_whisper_model(spec: &str) -> Result<(), String> {
     if let Some(filename) = chosen_path.file_name().and_then(|name| name.to_str()) {
         if filename.ends_with(".bin") {
             if let Some(url) = find_url(filename) {
+                println!("Downloading model from {} to {}", url, chosen_path.display());
                 download_model(url, &chosen_path).await?;
             }
             return Ok(());
         }
     }
 
-    let filename = format!("ggml-{}.bin", chosen);
-    if let Some(url) = find_url(&filename) {
-        let dest = default_models_path(&filename);
+    if let Some(url) = find_url(&chosen) {
+        println!("!!Downloading model from {} to {}", url, chosen_path.display());
+        let dest = default_models_path(&chosen);
         download_model(url, &dest).await?;
     }
 
@@ -99,7 +104,7 @@ fn assets_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("assets"))
 }
 
-fn should_skip_downloads() -> bool {
+pub fn should_skip_downloads() -> bool {
     env::var("ALICEPI_SKIP_GGML_DOWNLOAD").is_ok()
 }
 
@@ -119,14 +124,19 @@ fn parse_model_choice(spec: &str) -> Result<String, String> {
         return Err("SR_WHISPER_MODEL does not contain a usable model path".to_string());
     }
 
-    Ok(chosen.to_string())
+    let filename = format!("ggml-{}.bin", chosen);
+    Ok(filename)
 }
 
 fn find_url(filename: &str) -> Option<&'static str> {
+    println!("Finding URL for filename: {}", filename);
     MODELS
         .iter()
         .find(|spec| spec.filename == filename)
         .map(|spec| spec.url)
+        .or_else(|| {
+            panic!("Requested model {:?} does not exist and I don't know how to download it! Download it yourself and place it at {}", filename, default_models_path(filename).display())
+        })
 }
 
 async fn download_model(url: &str, dest: &Path) -> Result<(), String> {

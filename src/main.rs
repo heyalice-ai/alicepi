@@ -8,6 +8,7 @@ mod tasks;
 mod watchdog;
 
 use std::io::Read;
+use std::process::exit;
 use std::time::Duration;
 
 use clap::Parser;
@@ -33,10 +34,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             watchdog_ms,
             stream,
             no_stream,
+            download_models,
             gpio_button,
             gpio_lid,
             save_request_wavs,
         } => {
+            if download_models {
+                let model = std::env::var("SR_WHISPER_MODEL")
+                    .unwrap_or_else(|_| "base.en".to_string());
+                model_download::ensure_whisper_model(&model)
+                    .await
+                    .map_err(|err| format!("model download failed: {}", err))?;
+                let vad_path = model_download::default_assets_path("silero_vad.onnx");
+                model_download::ensure_silero_vad(&vad_path)
+                    .await
+                    .map_err(|err| format!("VAD model download failed: {}", err))?;
+
+                println!("Model download completed. Moving forward.");
+            }
+            
             let stream_audio = if stream {
                 true
             } else if no_stream {
