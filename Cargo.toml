@@ -34,6 +34,7 @@ reqwest = { version = "0.12.7", features = ["json", "rustls-tls", "stream", "zst
 tokio-tungstenite = "0.23.1"
 url = "2.5.2"
 uuid = { version = "1.10.0", features = ["v4"] }
+indicatif = "0.17.8"
 
 rppal = { version = "0.19.0", optional = true }
 

@@ -42,13 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if download_models {
                 let model = std::env::var("SR_WHISPER_MODEL")
                     .unwrap_or_else(|_| "base.en".to_string());
-                model_download::ensure_whisper_model(&model)
+                let vad_path = model_download::default_assets_path("silero_vad.onnx");
+                model_download::ensure_models_with_progress(&model, &vad_path)
                     .await
                     .map_err(|err| format!("model download failed: {}", err))?;
-                let vad_path = model_download::default_assets_path("silero_vad.onnx");
-                model_download::ensure_silero_vad(&vad_path)
-                    .await
-                    .map_err(|err| format!("VAD model download failed: {}", err))?;
 
                 println!("Model download completed. Moving forward.");
             }
