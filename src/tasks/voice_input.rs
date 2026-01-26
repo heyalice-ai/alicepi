@@ -22,7 +22,7 @@ struct VoiceInputConfig {
 
 impl VoiceInputConfig {
     fn from_env() -> Self {
-        let stream_sample_rate = env_u32("STREAM_SAMPLE_RATE", 48_000);
+        let stream_sample_rate = env_u32("STREAM_SAMPLE_RATE", 16_000);
         let stream_channels = env_usize("STREAM_CHANNELS", 2);
         let chunk_size = env_usize("CHUNK_SIZE", 512);
         let capture_device = env::var("CAPTURE_DEVICE")
@@ -168,7 +168,11 @@ impl LinearResampler {
             pos += step;
         }
 
-        let keep_frame = pos.floor() as usize;
+        let max_keep_frame = total_frames.saturating_sub(1);
+        let mut keep_frame = pos.floor() as usize;
+        if keep_frame > max_keep_frame {
+            keep_frame = max_keep_frame;
+        }
         let keep_index = keep_frame * self.channels;
         self.carry = combined[keep_index..].to_vec();
         self.pos = pos - keep_frame as f32;
@@ -373,6 +377,13 @@ fn start_live_capture(
         config.stream_channels,
         config.chunk_size,
     );
+    if info.sample_rate != config.stream_sample_rate {
+        tracing::warn!(
+            "input device running at {} Hz; resampling to {} Hz for Whisper",
+            info.sample_rate,
+            config.stream_sample_rate
+        );
+    }
 
     Ok((
         CaptureStream {
