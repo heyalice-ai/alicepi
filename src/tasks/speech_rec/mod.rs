@@ -269,7 +269,15 @@ pub async fn run(
                         match response.text {
                             Ok(text) => {
                                 if !text.trim().is_empty() {
-                                    let _ = events.send(SpeechRecEvent::Text { text, is_final: response.is_final });
+                                    tracing::info!(
+                                        "speech_rec result before orchestrator: is_final={} text={}",
+                                        response.is_final,
+                                        text
+                                    );
+                                    let _ = events.send(SpeechRecEvent::Text {
+                                        text,
+                                        is_final: response.is_final,
+                                    });
                                 }
                             }
                             Err(err) => {
