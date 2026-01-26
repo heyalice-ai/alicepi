@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytemuck::cast_slice;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time;
 
 use crate::model_download;
@@ -199,7 +199,8 @@ pub async fn run(
 ) {
     let mut config = SpeechRecConfig::from_env();
     if config.engine == SpeechRecEngine::Whisper {
-        if let Err(err) = model_download::ensure_whisper_model(&config.whisper.model).await {
+        let result = run_with_heartbeat(&heartbeat, model_download::ensure_whisper_model(&config.whisper.model)).await;
+        if let Err(err) = result {
             tracing::warn!("whisper model download failed: {}", err);
         }
     }
@@ -209,13 +210,16 @@ pub async fn run(
         } else {
             Some(Path::new(&config.sherpa.model_dir))
         };
-        match model_download::ensure_sherpa_zipformer_model(
-            &config.sherpa.model_name,
-            &config.sherpa.model_variant,
-            model_dir,
+        let result = run_with_heartbeat(
+            &heartbeat,
+            model_download::ensure_sherpa_zipformer_model(
+                &config.sherpa.model_name,
+                &config.sherpa.model_variant,
+                model_dir,
+            ),
         )
-        .await
-        {
+        .await;
+        match result {
             Ok(Some(paths)) => {
                 config.sherpa.apply_defaults_from_paths(paths);
             }
@@ -354,6 +358,32 @@ pub async fn run(
             }
         }
     }
+}
+
+async fn run_with_heartbeat<F, T>(heartbeat: &Heartbeat, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    let heartbeat = heartbeat.clone();
+    let ticker = tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_millis(250));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    heartbeat.tick();
+                }
+                _ = &mut stop_rx => {
+                    break;
+                }
+            }
+        }
+    });
+
+    let result = future.await;
+    let _ = stop_tx.send(());
+    ticker.abort();
+    result
 }
 
 fn spawn_transcriber(
