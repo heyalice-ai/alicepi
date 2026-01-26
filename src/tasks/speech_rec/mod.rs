@@ -109,7 +109,7 @@ impl SherpaConfig {
             joiner: env::var("SR_SHERPA_JOINER").unwrap_or_default(),
             tokens: env::var("SR_SHERPA_TOKENS").unwrap_or_default(),
             model_name: env::var("SR_SHERPA_MODEL")
-                .unwrap_or_else(|_| "zipformer-en-20M-2023-02-17".to_string()),
+                .unwrap_or_else(|_| "zipformer-en-2023-06-26".to_string()),
             model_variant: env::var("SR_SHERPA_MODEL_VARIANT")
                 .unwrap_or_else(|_| "fp32".to_string()),
             model_dir: env::var("SR_SHERPA_MODEL_DIR").unwrap_or_default(),

@@ -61,6 +61,19 @@ const SHERPA_ZIPFORMER_PRESETS: &[SherpaZipformerPreset] = &[SherpaZipformerPres
     tokens: "tokens.txt",
     bpe_vocab: None,
     modeling_unit: None,
+}, SherpaZipformerPreset {
+    name: "zipformer-en-2023-06-26",
+    archive: "sherpa-onnx-streaming-zipformer-en-2023-06-21.tar.bz2",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-21.tar.bz2",
+    dir: "sherpa-onnx-streaming-zipformer-en-2023-06-21",
+    encoder_fp32: "encoder-epoch-99-avg-1.onnx",
+    decoder_fp32: "decoder-epoch-99-avg-1.onnx",
+    joiner_fp32: "joiner-epoch-99-avg-1.onnx",
+    encoder_int8: "encoder-epoch-99-avg-1.int8.onnx",
+    joiner_int8: "joiner-epoch-99-avg-1.int8.onnx",
+    tokens: "tokens.txt",
+    bpe_vocab: None,
+    modeling_unit: None,
 }];
 
 #[allow(dead_code)]
