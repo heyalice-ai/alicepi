@@ -2,14 +2,31 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use bzip2::read::BzDecoder;
 use futures_util::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use tar::Archive;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 struct ModelSpec {
     filename: &'static str,
     url: &'static str,
+}
+
+struct SherpaZipformerPreset {
+    name: &'static str,
+    archive: &'static str,
+    url: &'static str,
+    dir: &'static str,
+    encoder_fp32: &'static str,
+    decoder_fp32: &'static str,
+    joiner_fp32: &'static str,
+    encoder_int8: &'static str,
+    joiner_int8: &'static str,
+    tokens: &'static str,
+    bpe_vocab: Option<&'static str>,
+    modeling_unit: Option<&'static str>,
 }
 
 const MODELS: &[ModelSpec] = &[
@@ -30,6 +47,32 @@ const MODELS: &[ModelSpec] = &[
         url: "https://raw.githubusercontent.com/Sameam/whisper_rust/main/models/silero_vad.onnx",
     },
 ];
+
+const SHERPA_ZIPFORMER_PRESETS: &[SherpaZipformerPreset] = &[SherpaZipformerPreset {
+    name: "zipformer-en-20M-2023-02-17",
+    archive: "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2",
+    dir: "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+    encoder_fp32: "encoder-epoch-99-avg-1.onnx",
+    decoder_fp32: "decoder-epoch-99-avg-1.onnx",
+    joiner_fp32: "joiner-epoch-99-avg-1.onnx",
+    encoder_int8: "encoder-epoch-99-avg-1.int8.onnx",
+    joiner_int8: "joiner-epoch-99-avg-1.int8.onnx",
+    tokens: "tokens.txt",
+    bpe_vocab: None,
+    modeling_unit: None,
+}];
+
+#[allow(dead_code)]
+pub struct SherpaZipformerPaths {
+    pub dir: PathBuf,
+    pub encoder: PathBuf,
+    pub decoder: PathBuf,
+    pub joiner: PathBuf,
+    pub tokens: PathBuf,
+    pub bpe_vocab: Option<PathBuf>,
+    pub modeling_unit: Option<&'static str>,
+}
 
 struct DownloadPlan {
     url: &'static str,
@@ -66,6 +109,63 @@ pub async fn ensure_whisper_model(spec: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub async fn ensure_sherpa_zipformer_model(
+    name: &str,
+    variant: &str,
+    model_dir: Option<&Path>,
+) -> Result<Option<SherpaZipformerPaths>, String> {
+    let paths = match sherpa_zipformer_paths(name, variant, model_dir)? {
+        Some(paths) => paths,
+        None => return Ok(None),
+    };
+
+    if should_skip_downloads() {
+        return Ok(Some(paths));
+    }
+
+    if sherpa_zipformer_files_exist(&paths) {
+        return Ok(Some(paths));
+    }
+
+    let preset = sherpa_zipformer_preset(name).ok_or_else(|| {
+        format!(
+            "unknown sherpa zipformer preset '{}'; set SR_SHERPA_MODEL_DIR or explicit paths",
+            name
+        )
+    })?;
+
+    let output_dir = match model_dir {
+        Some(dir) => {
+            let dir_name = dir.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            if !dir_name.is_empty() && dir_name != preset.dir {
+                return Err(format!(
+                    "SR_SHERPA_MODEL_DIR must end with '{}' to auto-download preset '{}'",
+                    preset.dir, preset.name
+                ));
+            }
+            dir.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+        }
+        None => ggml_dir(),
+    };
+
+    let archive_path = output_dir.join(preset.archive);
+    if !archive_path.exists() {
+        println!(
+            "Downloading sherpa zipformer model from {} to {}",
+            preset.url,
+            archive_path.display()
+        );
+        download_model(preset.url, &archive_path, None).await?;
+    }
+
+    extract_tar_bz2(&archive_path, &output_dir).await?;
+    let _ = fs::remove_file(&archive_path).await;
+
+    Ok(Some(paths))
 }
 
 pub async fn ensure_silero_vad(model_path: &Path) -> Result<(), String> {
@@ -265,6 +365,71 @@ fn find_url(filename: &str) -> Option<&'static str> {
         })
 }
 
+fn sherpa_zipformer_preset(name: &str) -> Option<&'static SherpaZipformerPreset> {
+    let trimmed = name.trim();
+    SHERPA_ZIPFORMER_PRESETS.iter().find(|preset| {
+        preset.name.eq_ignore_ascii_case(trimmed) || preset.dir.eq_ignore_ascii_case(trimmed)
+    })
+}
+
+pub fn sherpa_zipformer_paths(
+    name: &str,
+    variant: &str,
+    model_dir: Option<&Path>,
+) -> Result<Option<SherpaZipformerPaths>, String> {
+    let preset = match sherpa_zipformer_preset(name) {
+        Some(preset) => preset,
+        None => return Ok(None),
+    };
+
+    let variant = variant.trim().to_lowercase();
+    let (encoder_name, joiner_name) = match variant.as_str() {
+        "fp32" | "" => (preset.encoder_fp32, preset.joiner_fp32),
+        "int8" => (preset.encoder_int8, preset.joiner_int8),
+        other => {
+            return Err(format!(
+                "unsupported sherpa zipformer variant '{}'; use 'fp32' or 'int8'",
+                other
+            ))
+        }
+    };
+
+    let base_dir = match model_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => default_models_path(preset.dir),
+    };
+
+    let bpe_vocab = preset
+        .bpe_vocab
+        .map(|filename| base_dir.join(filename));
+
+    Ok(Some(SherpaZipformerPaths {
+        dir: base_dir.clone(),
+        encoder: base_dir.join(encoder_name),
+        decoder: base_dir.join(preset.decoder_fp32),
+        joiner: base_dir.join(joiner_name),
+        tokens: base_dir.join(preset.tokens),
+        bpe_vocab,
+        modeling_unit: preset.modeling_unit,
+    }))
+}
+
+fn sherpa_zipformer_files_exist(paths: &SherpaZipformerPaths) -> bool {
+    if !paths.encoder.exists()
+        || !paths.decoder.exists()
+        || !paths.joiner.exists()
+        || !paths.tokens.exists()
+    {
+        return false;
+    }
+    if let Some(ref vocab) = paths.bpe_vocab {
+        if !vocab.exists() {
+            return false;
+        }
+    }
+    true
+}
+
 async fn download_model(
     url: &str,
     dest: &Path,
@@ -318,4 +483,21 @@ async fn download_model(
             .finish_with_message(format!("{} done", progress.label));
     }
     Ok(())
+}
+
+async fn extract_tar_bz2(archive_path: &Path, output_dir: &Path) -> Result<(), String> {
+    let archive_path = archive_path.to_path_buf();
+    let output_dir = output_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&archive_path)
+            .map_err(|err| format!("open archive {} failed: {}", archive_path.display(), err))?;
+        let decompressor = BzDecoder::new(file);
+        let mut archive = Archive::new(decompressor);
+        archive
+            .unpack(&output_dir)
+            .map_err(|err| format!("extract archive failed: {}", err))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }

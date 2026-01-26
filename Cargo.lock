@@ -24,6 +24,7 @@ dependencies = [
  "async-trait",
  "bytemuck",
  "bytes",
+ "bzip2 0.5.2",
  "clap",
  "cpal",
  "dotenvy",
@@ -39,6 +40,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sherpa-rs-sys",
+ "tar",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
@@ -272,6 +274,15 @@ checksum = "bdb116a6ef3f6c3698828873ad02c3014b3c85cadb88496095628e3ef1e347f8"
 dependencies = [
  "bzip2-sys",
  "libc",
+]
+
+[[package]]
+name = "bzip2"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49ecfb22d906f800d4fe833b6282cf4dc1c298f5057ca0b5445e5c209735ca47"
+dependencies = [
+ "bzip2-sys",
 ]
 
 [[package]]
@@ -2288,7 +2299,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "591c9432b20f41d47f622a73c2888b188c321e313d820824df7d9fa51dbada43"
 dependencies = [
  "bindgen 0.69.5",
- "bzip2",
+ "bzip2 0.4.4",
  "cmake",
  "dirs",
  "flate2",

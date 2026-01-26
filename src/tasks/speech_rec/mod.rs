@@ -79,6 +79,9 @@ struct SherpaConfig {
     decoder: String,
     joiner: String,
     tokens: String,
+    model_name: String,
+    model_variant: String,
+    model_dir: String,
     provider: String,
     decoding_method: String,
     hotwords_file: String,
@@ -100,11 +103,16 @@ impl SherpaConfig {
                 .map(|count| count.get() as i32)
                 .unwrap_or(1),
         );
-        Self {
+        let mut config = Self {
             encoder: env::var("SR_SHERPA_ENCODER").unwrap_or_default(),
             decoder: env::var("SR_SHERPA_DECODER").unwrap_or_default(),
             joiner: env::var("SR_SHERPA_JOINER").unwrap_or_default(),
             tokens: env::var("SR_SHERPA_TOKENS").unwrap_or_default(),
+            model_name: env::var("SR_SHERPA_MODEL")
+                .unwrap_or_else(|_| "zipformer-en-20M-2023-02-17".to_string()),
+            model_variant: env::var("SR_SHERPA_MODEL_VARIANT")
+                .unwrap_or_else(|_| "fp32".to_string()),
+            model_dir: env::var("SR_SHERPA_MODEL_DIR").unwrap_or_default(),
             provider: env::var("SR_SHERPA_PROVIDER").unwrap_or_else(|_| "cpu".to_string()),
             decoding_method: env::var("SR_SHERPA_DECODING_METHOD")
                 .unwrap_or_else(|_| "greedy_search".to_string()),
@@ -118,6 +126,45 @@ impl SherpaConfig {
             feature_dim: env_i32("SR_SHERPA_FEATURE_DIM", 80),
             blank_penalty: env_f32("SR_SHERPA_BLANK_PENALTY", 0.0),
             hotwords_score: env_f32("SR_SHERPA_HOTWORDS_SCORE", 1.5),
+        };
+
+        let model_dir = if config.model_dir.trim().is_empty() {
+            None
+        } else {
+            Some(Path::new(&config.model_dir))
+        };
+        if let Ok(Some(paths)) = model_download::sherpa_zipformer_paths(
+            &config.model_name,
+            &config.model_variant,
+            model_dir,
+        ) {
+            config.apply_defaults_from_paths(paths);
+        }
+        config
+    }
+
+    fn apply_defaults_from_paths(&mut self, paths: model_download::SherpaZipformerPaths) {
+        if self.encoder.is_empty() {
+            self.encoder = paths.encoder.to_string_lossy().to_string();
+        }
+        if self.decoder.is_empty() {
+            self.decoder = paths.decoder.to_string_lossy().to_string();
+        }
+        if self.joiner.is_empty() {
+            self.joiner = paths.joiner.to_string_lossy().to_string();
+        }
+        if self.tokens.is_empty() {
+            self.tokens = paths.tokens.to_string_lossy().to_string();
+        }
+        if self.bpe_vocab.is_empty() {
+            if let Some(path) = paths.bpe_vocab {
+                self.bpe_vocab = path.to_string_lossy().to_string();
+            }
+        }
+        if self.modeling_unit.is_empty() {
+            if let Some(unit) = paths.modeling_unit {
+                self.modeling_unit = unit.to_string();
+            }
         }
     }
 }
@@ -150,10 +197,32 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
     save_request_wavs_dir: Option<PathBuf>,
 ) {
-    let config = SpeechRecConfig::from_env();
+    let mut config = SpeechRecConfig::from_env();
     if config.engine == SpeechRecEngine::Whisper {
         if let Err(err) = model_download::ensure_whisper_model(&config.whisper.model).await {
             tracing::warn!("whisper model download failed: {}", err);
+        }
+    }
+    if config.engine == SpeechRecEngine::SherpaZipformer {
+        let model_dir = if config.sherpa.model_dir.trim().is_empty() {
+            None
+        } else {
+            Some(Path::new(&config.sherpa.model_dir))
+        };
+        match model_download::ensure_sherpa_zipformer_model(
+            &config.sherpa.model_name,
+            &config.sherpa.model_variant,
+            model_dir,
+        )
+        .await
+        {
+            Ok(Some(paths)) => {
+                config.sherpa.apply_defaults_from_paths(paths);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!("sherpa model download failed: {}", err);
+            }
         }
     }
 
