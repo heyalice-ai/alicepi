@@ -35,7 +35,9 @@ export CFLAGS="--sysroot=${SYSROOT} -I${SYSROOT_INCLUDE}"
 export CXXFLAGS="--sysroot=${SYSROOT} -I${SYSROOT_INCLUDE} -I${SYSROOT_CXX_VERSION_INCLUDE} -I${SYSROOT_CXX_TARGET_INCLUDE}"
 export LDFLAGS="--sysroot=${SYSROOT} -L${SYSROOT_LIB64} -L${SYSROOT_LIB}"
 export CMAKE_EXE_LINKER_FLAGS="--sysroot=${SYSROOT} -L${SYSROOT_LIB64} -L${SYSROOT_LIB}"
-export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C force-frame-pointers=yes -C link-arg=-Wl,--no-as-needed -C link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/15 -C link-arg=-lgcc -C link-arg=-l:libatomic.so.1 -C link-arg=-Wl,--as-needed"
+RUSTFLAGS_BASE="-C force-frame-pointers=yes -C link-arg=-Wl,--no-as-needed -C link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/15 -C link-arg=-lgcc -C link-arg=-l:libatomic.so.1 -C link-arg=-Wl,--as-needed"
+RPATH_ARG='-C link-arg=-Wl,-rpath,$ORIGIN/lib'
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${RUSTFLAGS_BASE} ${RPATH_ARG}"
 
 if [ -e "${SYSROOT}/lib64/libgcc_s.so.1" ] && [ ! -e "${SYSROOT}/lib64/libgcc_s.so" ]; then
   ln -s libgcc_s.so.1 "${SYSROOT}/lib64/libgcc_s.so"
@@ -51,9 +53,10 @@ fi
 # cargo build --features=gpio --profile=${PROFILE} --target ${ARCH} "$@"
 cargo build --profile=${PROFILE} --target ${ARCH} "$@"
 
+ssh "${DEPLOY_TARGET}" "mkdir -p alicepi/lib"
 rsync -rvpP ./target/${ARCH}/${PROFILE}/alicepi ${DEPLOY_TARGET}:alicepi/alicepi-static
+rsync -rvpP ./target/${ARCH}/${PROFILE}/{libsherpa-onnx-*.so,libonnxruntime.so} ${DEPLOY_TARGET}:alicepi/lib/
 
 
 # Also sync the models
 rsync -rvpP ./models ./assets ${DEPLOY_TARGET}:alicepi/
-
