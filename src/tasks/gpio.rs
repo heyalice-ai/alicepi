@@ -193,7 +193,6 @@ async fn run_status_led(
     let pwm_period = Duration::from_secs_f32(1.0 / config.pwm_hz as f32);
     let mut current = 0.0f32;
     let mut target = 0.0f32;
-    let mut last_logged_current = -1.0f32;
     let mut last_logged_target = -1.0f32;
     let mut last_logged_mode = LedMode::Fixed;
     let mut mode = LedMode::Fixed;
@@ -275,23 +274,25 @@ async fn run_status_led(
         let dt = now.saturating_duration_since(last_update);
         current = step_toward(current, target, dt, config.transition_time);
         last_update = now;
-        if (current - last_logged_current).abs() > 0.001 {
-            tracing::trace!(
-                duty = current,
-                target = target,
-                mode = ?mode,
-                "status led duty updated"
-            );
-            last_logged_current = current;
-        }
-
         let duty = current.clamp(0.0, 1.0);
         if duty <= 0.0 {
+            tracing::trace!(
+                duty = duty,
+                target = target,
+                mode = ?mode,
+                "status led pwm cycle (off)"
+            );
             pin.set_low();
             tokio::time::sleep(pwm_period).await;
             continue;
         }
         if duty >= 1.0 {
+            tracing::trace!(
+                duty = duty,
+                target = target,
+                mode = ?mode,
+                "status led pwm cycle (on)"
+            );
             pin.set_high();
             tokio::time::sleep(pwm_period).await;
             continue;
@@ -299,6 +300,14 @@ async fn run_status_led(
 
         let on_time = pwm_period.mul_f32(duty);
         let off_time = pwm_period.saturating_sub(on_time);
+        tracing::trace!(
+            duty = duty,
+            target = target,
+            mode = ?mode,
+            on_ms = on_time.as_secs_f32() * 1000.0,
+            off_ms = off_time.as_secs_f32() * 1000.0,
+            "status led pwm cycle"
+        );
         pin.set_high();
         tokio::time::sleep(on_time).await;
         pin.set_low();
