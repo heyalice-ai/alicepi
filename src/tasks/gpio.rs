@@ -193,6 +193,9 @@ async fn run_status_led(
     let pwm_period = Duration::from_secs_f32(1.0 / config.pwm_hz as f32);
     let mut current = 0.0f32;
     let mut target = 0.0f32;
+    let mut last_logged_current = -1.0f32;
+    let mut last_logged_target = -1.0f32;
+    let mut last_logged_mode = LedMode::Fixed;
     let mut mode = LedMode::Fixed;
     let mut pulse_high = false;
     let mut next_pulse_switch = Instant::now() + config.processing_cycle;
@@ -208,6 +211,14 @@ async fn run_status_led(
         &mut next_pulse_switch,
     );
     current = target;
+    last_logged_target = target;
+    last_logged_mode = mode;
+    tracing::trace!(
+        duty = current,
+        target = target,
+        mode = ?mode,
+        "status led initialized"
+    );
 
     loop {
         if shutdown.has_changed().unwrap_or(false) {
@@ -226,6 +237,17 @@ async fn run_status_led(
                 &mut pulse_high,
                 &mut next_pulse_switch,
             );
+            if (target - last_logged_target).abs() > f32::EPSILON || mode != last_logged_mode {
+                tracing::trace!(
+                    state = %status.state,
+                    duty = current,
+                    target = target,
+                    mode = ?mode,
+                    "status led target updated"
+                );
+                last_logged_target = target;
+                last_logged_mode = mode;
+            }
         }
 
         let now = Instant::now();
@@ -239,11 +261,29 @@ async fn run_status_led(
             } else {
                 config.idle_brightness
             };
+            if (target - last_logged_target).abs() > f32::EPSILON {
+                tracing::trace!(
+                    duty = current,
+                    target = target,
+                    mode = ?mode,
+                    "status led pulse target updated"
+                );
+                last_logged_target = target;
+            }
         }
 
         let dt = now.saturating_duration_since(last_update);
         current = step_toward(current, target, dt, config.transition_time);
         last_update = now;
+        if (current - last_logged_current).abs() > 0.001 {
+            tracing::trace!(
+                duty = current,
+                target = target,
+                mode = ?mode,
+                "status led duty updated"
+            );
+            last_logged_current = current;
+        }
 
         let duty = current.clamp(0.0, 1.0);
         if duty <= 0.0 {
