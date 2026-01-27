@@ -511,9 +511,11 @@ fn build_empty_past_values(
 ) -> Result<Vec<(String, ort::value::DynValue)>, String> {
     let mut values = Vec::with_capacity(keys.len());
     for name in keys {
+        // ORT's Rust bindings reject tensors with 0-sized dimensions; seed a 1xHx1xD zero cache.
+        // The decoder ignores cache tensors on the first step when use_cache_branch=false.
         let tensor = Tensor::from_array((
-            [0usize, num_heads, 1, head_dim],
-            Vec::<f32>::new(),
+            [1usize, num_heads, 1, head_dim],
+            vec![0.0f32; num_heads * head_dim],
         ))
         .map_err(|err| err.to_string())?
         .into_dyn();
