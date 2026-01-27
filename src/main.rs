@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cli::{ClientAction, Command, Cli};
 use crate::config::ServerConfig;
-use crate::protocol::{AudioStreamFormat, ClientCommand, ServerReply};
+use crate::protocol::{AudioStreamFormat, ClientCommand, RuntimeState, ServerReply, StatusSnapshot};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,6 +76,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             orchestrator::run_server(config).await.map_err(|err| err.into())
         }
+        Command::LedTest { led_status_gpio } => {
+            let gpio_status_led_pin =
+                led_status_gpio.or_else(|| parse_env_u8("GPIO_STATUS_LED"));
+            let Some(pin) = gpio_status_led_pin else {
+                return Err("led-test requires --led-status-gpio or GPIO_STATUS_LED".into());
+            };
+            run_led_test(pin).await
+        }
         Command::Client { addr, action } => {
             match action {
                 ClientAction::Ping => send_simple_command(&addr, ClientCommand::Ping).await,
@@ -112,6 +120,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+}
+
+#[cfg(feature = "gpio")]
+async fn run_led_test(pin: u8) -> Result<(), Box<dyn std::error::Error>> {
+    use rppal::gpio::Gpio;
+    use tokio::io::AsyncBufReadExt;
+
+    let gpio = Gpio::new().map_err(|err| format!("gpio unavailable: {}", err))?;
+    let pin = gpio
+        .get(pin)
+        .map_err(|err| format!("failed to init status led pin {}: {}", pin, err))?
+        .into_output_low();
+
+    let (status_tx, status_rx) = tokio::sync::watch::channel(StatusSnapshot {
+        state: RuntimeState::Idle,
+        mic_muted: false,
+        lid_open: true,
+    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let led_task = tokio::spawn(tasks::gpio::run_status_led_with_env(
+        pin,
+        status_rx,
+        shutdown_rx,
+    ));
+
+    println!("Status LED test mode");
+    println!("Commands: I=Idle, L=Listening, P=Processing, S=Speaking, Q=Quit");
+
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let line = line?;
+                let Some(line) = line else {
+                    break;
+                };
+                let cmd = line.trim();
+                if cmd.is_empty() {
+                    continue;
+                }
+                let state = match cmd.to_ascii_lowercase().as_str() {
+                    "i" | "idle" => Some(RuntimeState::Idle),
+                    "l" | "listening" => Some(RuntimeState::Listening),
+                    "p" | "processing" => Some(RuntimeState::Processing),
+                    "s" | "speaking" => Some(RuntimeState::Speaking),
+                    "q" | "quit" | "exit" => break,
+                    _ => {
+                        println!("Unknown command '{}'. Use I/L/P/S or Q to quit.", cmd);
+                        None
+                    }
+                };
+                if let Some(state) = state {
+                    let _ = status_tx.send(StatusSnapshot {
+                        state,
+                        mic_muted: false,
+                        lid_open: true,
+                    });
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+        }
+    }
+
+    let _ = shutdown_tx.send(true);
+    let _ = led_task.await;
+    Ok(())
+}
+
+#[cfg(not(feature = "gpio"))]
+async fn run_led_test(_pin: u8) -> Result<(), Box<dyn std::error::Error>> {
+    println!("led-test requires the 'gpio' feature to be enabled.");
+    Ok(())
 }
 
 async fn send_simple_command(

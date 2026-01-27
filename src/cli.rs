@@ -31,6 +31,11 @@ pub enum Command {
         #[arg(long, value_name = "DIR")]
         save_request_wavs: Option<String>,
     },
+    #[command(about = "Interactively test the status LED via GPIO")]
+    LedTest {
+        #[arg(long, value_name = "PIN")]
+        led_status_gpio: Option<u8>,
+    },
     Client {
         #[arg(long, default_value_t = ServerConfig::default_bind())]
         addr: String,

@@ -194,6 +194,16 @@ impl StatusLedConfig {
 }
 
 #[cfg(feature = "gpio")]
+pub async fn run_status_led_with_env(
+    pin: rppal::gpio::OutputPin,
+    status_rx: watch::Receiver<StatusSnapshot>,
+    shutdown: watch::Receiver<bool>,
+) {
+    let config = StatusLedConfig::from_env();
+    run_status_led(pin, status_rx, shutdown, config).await;
+}
+
+#[cfg(feature = "gpio")]
 async fn run_status_led(
     mut pin: rppal::gpio::OutputPin,
     mut status_rx: watch::Receiver<StatusSnapshot>,
