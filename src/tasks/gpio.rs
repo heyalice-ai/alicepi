@@ -274,6 +274,7 @@ async fn run_status_led(
             };
             if (target - last_logged_target).abs() > f32::EPSILON {
                 tracing::trace!(
+                    target: "alicepi::tasks::gpio::status_led::per_cycle",
                     duty = current,
                     target = target,
                     mode = ?mode,
