@@ -75,8 +75,20 @@ pub async fn run(
             let led_config = StatusLedConfig::from_env();
             let led_shutdown = shutdown.clone();
             let led_status = status_rx.clone();
-            tokio::spawn(async move {
-                run_status_led(pin, led_status, led_shutdown, led_config).await;
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build();
+                match runtime {
+                    Ok(rt) => {
+                        rt.block_on(async move {
+                            run_status_led(pin, led_status, led_shutdown, led_config).await;
+                        });
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to start status led runtime: {}", err);
+                    }
+                }
             });
         }
 
