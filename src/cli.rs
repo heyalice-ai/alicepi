@@ -26,6 +26,8 @@ pub enum Command {
         gpio_button: Option<u8>,
         #[arg(long)]
         gpio_lid: Option<u8>,
+        #[arg(long, value_name = "PIN")]
+        led_status_gpio: Option<u8>,
         #[arg(long, value_name = "DIR")]
         save_request_wavs: Option<String>,
     },

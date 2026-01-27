@@ -453,9 +453,11 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
         tasks::gpio::GpioConfig {
             button_pin: config.gpio_button_pin,
             lid_pin: config.gpio_lid_pin,
+            status_led_pin: config.gpio_status_led_pin,
         },
         client_tx.clone(),
         shutdown_rx.clone(),
+        status_rx.clone(),
     );
 
     let server_task = tcp_server(

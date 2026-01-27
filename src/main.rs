@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             download_models,
             gpio_button,
             gpio_lid,
+            led_status_gpio,
             save_request_wavs,
         } => {
             if download_models {
@@ -62,11 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 false
             };
+            let gpio_status_led_pin =
+                led_status_gpio.or_else(|| parse_env_u8("GPIO_STATUS_LED"));
             let config = ServerConfig {
                 bind_addr: bind,
                 watchdog_timeout: Duration::from_millis(watchdog_ms),
                 gpio_button_pin: gpio_button,
                 gpio_lid_pin: gpio_lid,
+                gpio_status_led_pin,
                 stream_audio,
                 save_request_wavs_dir: save_request_wavs.map(std::path::PathBuf::from),
             };
@@ -239,4 +243,15 @@ async fn send_stream_command(
         .map_err(|err| format!("read failed: {}", err))?;
     let line = line.ok_or_else(|| "server closed connection".to_string())?;
     serde_json::from_str(&line).map_err(|err| format!("invalid reply: {}", err))
+}
+
+fn parse_env_u8(name: &str) -> Option<u8> {
+    let value = std::env::var(name).ok()?;
+    match value.trim().parse::<u8>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            tracing::warn!("invalid {} value '{}': {}", name, value, err);
+            None
+        }
+    }
 }
