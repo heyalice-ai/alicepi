@@ -203,6 +203,9 @@ pub async fn run(
     save_request_wavs_dir: Option<PathBuf>,
 ) {
     let mut config = SpeechRecConfig::from_env();
+
+    tracing::info!("speech_rec:run using config: {:?}", config);
+
     if config.engine == SpeechRecEngine::Whisper {
         let result = run_with_heartbeat(&heartbeat, model_download::ensure_whisper_model(&config.whisper.model)).await;
         if let Err(err) = result {
