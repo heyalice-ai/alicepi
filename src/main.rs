@@ -24,7 +24,7 @@ use crate::protocol::{AudioStreamFormat, ClientCommand, ServerReply};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("alicepi=debug".parse()?))
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
