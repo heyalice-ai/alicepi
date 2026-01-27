@@ -14,22 +14,14 @@ use crate::engine::{
     SessionManager,
 };
 use crate::protocol::{
-    ClientCommand, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot, VoiceInputCommand,
-    VoiceInputEvent, VoiceOutputCommand,
+    ClientCommand, RuntimeState, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot,
+    VoiceInputCommand, VoiceInputEvent, VoiceOutputCommand,
 };
 use crate::tasks;
 use crate::watchdog::{self, CommandHandle};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Idle,
-    Listening,
-    Processing,
-    Speaking,
-}
-
 struct Orchestrator {
-    state: State,
+    state: RuntimeState,
     mic_muted: bool,
     lid_open: bool,
     generation: Arc<AtomicU64>,
@@ -63,7 +55,7 @@ impl Orchestrator {
         status_tx: watch::Sender<StatusSnapshot>,
     ) -> Self {
         Self {
-            state: State::Idle,
+            state: RuntimeState::Idle,
             mic_muted: true,
             lid_open: true,
             generation: Arc::new(AtomicU64::new(0)),
@@ -145,11 +137,11 @@ impl Orchestrator {
                 }
             }
             ClientCommand::AudioFile { path } => {
-                self.set_state(State::Speaking);
+                self.set_state(RuntimeState::Speaking);
                 let _ = self.voice_output.send(VoiceOutputCommand::PlayAudioFile { path }).await;
             }
             ClientCommand::AudioStreamStart { format } => {
-                self.set_state(State::Speaking);
+                self.set_state(RuntimeState::Speaking);
                 let _ = self
                     .voice_output
                     .send(VoiceOutputCommand::StartStream { format })
@@ -175,7 +167,7 @@ impl Orchestrator {
                 self.set_lid_open(false);
                 self.cancel_session().await;
                 self.set_mic_muted(true);
-                self.set_state(State::Idle);
+                self.set_state(RuntimeState::Idle);
             }
         }
     }
@@ -183,13 +175,13 @@ impl Orchestrator {
     async fn handle_button_press(&mut self) {
         self.cancel_session().await;
         self.set_mic_muted(false);
-        self.set_state(State::Listening);
+        self.set_state(RuntimeState::Listening);
         let _ = self.voice_input.send(VoiceInputCommand::StartListening).await;
     }
 
     async fn handle_button_release(&mut self) {
         self.set_mic_muted(true);
-        self.set_state(State::Idle);
+        self.set_state(RuntimeState::Idle);
         let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
     }
 
@@ -230,7 +222,7 @@ impl Orchestrator {
                                 self.session.add_assistant_placeholder();
                             }
 
-                            self.set_state(State::Speaking);
+                            self.set_state(RuntimeState::Speaking);
                             match response.audio {
                                 EngineAudio::Full(audio) => {
                                     let _ = self
@@ -308,7 +300,7 @@ impl Orchestrator {
                         }
                         Err(err) => {
                             tracing::warn!("engine request failed: {}", err);
-                            self.set_state(State::Idle);
+                            self.set_state(RuntimeState::Idle);
                         }
                     }
                 } else {
@@ -329,7 +321,7 @@ impl Orchestrator {
         }
 
         self.session.add_user_message(&text);
-        self.set_state(State::Processing);
+        self.set_state(RuntimeState::Processing);
         let generation = self.generation.load(Ordering::SeqCst);
         let started_at = Instant::now();
         let tx = self.internal_tx.clone();
@@ -360,7 +352,7 @@ impl Orchestrator {
         let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
     }
 
-    fn set_state(&mut self, next: State) {
+    fn set_state(&mut self, next: RuntimeState) {
         if self.state != next {
             self.state = next;
             self.publish_status();
@@ -386,7 +378,7 @@ impl Orchestrator {
 
     fn publish_status(&self) {
         let _ = self.status_tx.send(StatusSnapshot {
-            state: format!("{:?}", self.state),
+            state: self.state,
             mic_muted: self.mic_muted,
             lid_open: self.lid_open,
         });
@@ -398,7 +390,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
     let (client_tx, client_rx) = mpsc::channel(64);
     let (internal_tx, internal_rx) = mpsc::channel(16);
     let (status_tx, status_rx) = watch::channel(StatusSnapshot {
-        state: format!("{:?}", State::Idle),
+        state: RuntimeState::Idle,
         mic_muted: true,
         lid_open: true,
     });

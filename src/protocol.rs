@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RuntimeState {
+    Idle,
+    Listening,
+    Processing,
+    Speaking,
+}
+
+impl RuntimeState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RuntimeState::Idle => "Idle",
+            RuntimeState::Listening => "Listening",
+            RuntimeState::Processing => "Processing",
+            RuntimeState::Speaking => "Speaking",
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
@@ -19,7 +44,7 @@ pub enum ClientCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusSnapshot {
-    pub state: String,
+    pub state: RuntimeState,
     pub mic_muted: bool,
     pub lid_open: bool,
 }

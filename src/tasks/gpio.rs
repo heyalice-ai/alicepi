@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
 
-use crate::protocol::{ClientCommand, StatusSnapshot};
+use crate::protocol::{ClientCommand, RuntimeState, StatusSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct GpioConfig {
@@ -277,7 +277,7 @@ fn apply_state_target(
     pulse_high: &mut bool,
     next_pulse_switch: &mut Instant,
 ) {
-    let desired_mode = desired_led_mode(&status.state, config.pulse_while_speaking);
+    let desired_mode = desired_led_mode(status.state, config.pulse_while_speaking);
     match desired_mode {
         LedMode::Pulse => {
             if *mode != LedMode::Pulse {
@@ -289,26 +289,26 @@ fn apply_state_target(
         }
         LedMode::Fixed => {
             *mode = LedMode::Fixed;
-            *target = fixed_target_for_state(&status.state, config);
+            *target = fixed_target_for_state(status.state, config);
         }
     }
 }
 
 #[cfg(feature = "gpio")]
-fn desired_led_mode(state: &str, pulse_while_speaking: bool) -> LedMode {
+fn desired_led_mode(state: RuntimeState, pulse_while_speaking: bool) -> LedMode {
     match state {
-        "Processing" => LedMode::Pulse,
-        "Speaking" if pulse_while_speaking => LedMode::Pulse,
+        RuntimeState::Processing => LedMode::Pulse,
+        RuntimeState::Speaking if pulse_while_speaking => LedMode::Pulse,
         _ => LedMode::Fixed,
     }
 }
 
 #[cfg(feature = "gpio")]
-fn fixed_target_for_state(state: &str, config: &StatusLedConfig) -> f32 {
+fn fixed_target_for_state(state: RuntimeState, config: &StatusLedConfig) -> f32 {
     match state {
-        "Listening" => config.listening_brightness,
-        "Speaking" => config.max_brightness,
-        "Processing" => config.idle_brightness,
+        RuntimeState::Listening => config.listening_brightness,
+        RuntimeState::Speaking => config.max_brightness,
+        RuntimeState::Processing => config.idle_brightness,
         _ => config.idle_brightness,
     }
 }
