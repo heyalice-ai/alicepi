@@ -29,6 +29,11 @@ struct SherpaZipformerPreset {
     modeling_unit: Option<&'static str>,
 }
 
+struct MoonshinePreset {
+    name: &'static str,
+    tokenizer_url: &'static str,
+}
+
 const MODELS: &[ModelSpec] = &[
     ModelSpec {
         filename: "ggml-tiny.bin",
@@ -76,6 +81,17 @@ const SHERPA_ZIPFORMER_PRESETS: &[SherpaZipformerPreset] = &[SherpaZipformerPres
     modeling_unit: None,
 }];
 
+const MOONSHINE_PRESETS: &[MoonshinePreset] = &[
+    MoonshinePreset {
+        name: "tiny",
+        tokenizer_url: "https://huggingface.co/UsefulSensors/moonshine-tiny/resolve/main/tokenizer.json",
+    },
+    MoonshinePreset {
+        name: "base",
+        tokenizer_url: "https://huggingface.co/UsefulSensors/moonshine/resolve/main/ctranslate2/base/tokenizer.json",
+    },
+];
+
 #[allow(dead_code)]
 pub struct SherpaZipformerPaths {
     pub dir: PathBuf,
@@ -87,6 +103,13 @@ pub struct SherpaZipformerPaths {
     pub modeling_unit: Option<&'static str>,
 }
 
+#[allow(dead_code)]
+pub struct MoonshinePaths {
+    pub dir: PathBuf,
+    pub encoder: PathBuf,
+    pub decoder: PathBuf,
+    pub tokenizer: PathBuf,
+}
 struct DownloadPlan {
     url: &'static str,
     dest: PathBuf,
@@ -105,6 +128,14 @@ pub fn default_models_path(filename: &str) -> PathBuf {
 
 pub fn default_assets_path(filename: &str) -> PathBuf {
     assets_dir().join(filename)
+}
+
+pub fn models_dir() -> PathBuf {
+    ggml_dir()
+}
+
+pub fn assets_dir_path() -> PathBuf {
+    assets_dir()
 }
 
 pub async fn ensure_whisper_model(spec: &str) -> Result<(), String> {
@@ -177,6 +208,60 @@ pub async fn ensure_sherpa_zipformer_model(
 
     extract_tar_bz2(&archive_path, &output_dir).await?;
     let _ = fs::remove_file(&archive_path).await;
+
+    Ok(Some(paths))
+}
+
+pub async fn ensure_moonshine_model(
+    name: &str,
+    precision: &str,
+    model_dir: Option<&Path>,
+    tokenizer_path: &Path,
+) -> Result<Option<MoonshinePaths>, String> {
+    let paths = match moonshine_paths(name, precision, model_dir, tokenizer_path)? {
+        Some(paths) => paths,
+        None => return Ok(None),
+    };
+
+    if should_skip_downloads() {
+        return Ok(Some(paths));
+    }
+
+    let model_name = moonshine_model_name(name)?;
+    let precision = moonshine_precision(precision)?;
+    let (encoder_url, decoder_url) = moonshine_model_urls(&model_name, precision.as_str());
+
+    if !paths.encoder.exists() {
+        println!(
+            "Downloading Moonshine encoder from {} to {}",
+            encoder_url,
+            paths.encoder.display()
+        );
+        download_model(&encoder_url, &paths.encoder, None).await?;
+    }
+    if !paths.decoder.exists() {
+        println!(
+            "Downloading Moonshine decoder from {} to {}",
+            decoder_url,
+            paths.decoder.display()
+        );
+        download_model(&decoder_url, &paths.decoder, None).await?;
+    }
+
+    if !paths.tokenizer.exists() {
+        let preset = moonshine_preset(&model_name).ok_or_else(|| {
+            format!(
+                "unknown Moonshine model '{}'; set SR_MOONSHINE_MODEL_DIR and SR_MOONSHINE_TOKENIZER",
+                name
+            )
+        })?;
+        println!(
+            "Downloading Moonshine tokenizer from {} to {}",
+            preset.tokenizer_url,
+            paths.tokenizer.display()
+        );
+        download_model(preset.tokenizer_url, &paths.tokenizer, None).await?;
+    }
 
     Ok(Some(paths))
 }
@@ -272,6 +357,72 @@ pub async fn ensure_models_with_progress(
     };
 
     tokio::try_join!(whisper_future, silero_future).map(|_| ())
+}
+
+pub async fn ensure_moonshine_english_models_with_progress(
+    assets_dir: &Path,
+) -> Result<(), String> {
+    if should_skip_downloads() {
+        return Ok(());
+    }
+
+    let progress = MultiProgress::new();
+    let spinner_style = ProgressStyle::with_template("{msg:20} {spinner} {bytes}")
+        .map_err(|err| err.to_string())?;
+    let bar_style =
+        ProgressStyle::with_template("{msg:20} {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
+            .map_err(|err| err.to_string())?
+            .progress_chars("##-");
+
+    let precisions = ["float", "quantized", "quantized_4bit"];
+
+    for preset in MOONSHINE_PRESETS {
+        for precision in precisions {
+            let tokenizer_path = assets_dir.join(format!(
+                "moonshine_{}_tokenizer.json",
+                preset.name
+            ));
+            let paths = moonshine_paths(preset.name, precision, None, &tokenizer_path)?
+                .ok_or_else(|| format!("unknown Moonshine model '{}'", preset.name))?;
+            let (encoder_url, decoder_url) = moonshine_model_urls(preset.name, precision);
+
+            if !paths.encoder.exists() {
+                download_with_progress(
+                    &progress,
+                    &spinner_style,
+                    &bar_style,
+                    &encoder_url,
+                    &paths.encoder,
+                    format!("Moonshine {} {} enc", preset.name, precision),
+                )
+                .await?;
+            }
+            if !paths.decoder.exists() {
+                download_with_progress(
+                    &progress,
+                    &spinner_style,
+                    &bar_style,
+                    &decoder_url,
+                    &paths.decoder,
+                    format!("Moonshine {} {} dec", preset.name, precision),
+                )
+                .await?;
+            }
+            if !paths.tokenizer.exists() {
+                download_with_progress(
+                    &progress,
+                    &spinner_style,
+                    &bar_style,
+                    preset.tokenizer_url,
+                    &paths.tokenizer,
+                    format!("Moonshine {} tok", preset.name),
+                )
+                .await?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn ggml_dir() -> PathBuf {
@@ -385,6 +536,52 @@ fn sherpa_zipformer_preset(name: &str) -> Option<&'static SherpaZipformerPreset>
     })
 }
 
+fn moonshine_preset(name: &str) -> Option<&'static MoonshinePreset> {
+    let trimmed = name.trim();
+    MOONSHINE_PRESETS
+        .iter()
+        .find(|preset| preset.name.eq_ignore_ascii_case(trimmed))
+}
+
+fn moonshine_model_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("SR_MOONSHINE_MODEL is empty".to_string());
+    }
+    let value = trimmed
+        .split('/')
+        .filter(|part| !part.trim().is_empty())
+        .last()
+        .unwrap_or(trimmed)
+        .trim();
+    if value.is_empty() {
+        return Err("SR_MOONSHINE_MODEL does not contain a usable model name".to_string());
+    }
+    Ok(value.to_lowercase())
+}
+
+fn moonshine_precision(precision: &str) -> Result<String, String> {
+    let trimmed = precision.trim().to_lowercase();
+    match trimmed.as_str() {
+        "float" | "quantized" | "quantized_4bit" => Ok(trimmed),
+        other => Err(format!(
+            "unsupported Moonshine precision '{}'; use 'float', 'quantized', or 'quantized_4bit'",
+            other
+        )),
+    }
+}
+
+fn moonshine_model_urls(model: &str, precision: &str) -> (String, String) {
+    let base = format!(
+        "https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx/merged/{}/{}/",
+        model, precision
+    );
+    (
+        format!("{}encoder_model.onnx", base),
+        format!("{}decoder_model_merged.onnx", base),
+    )
+}
+
 pub fn sherpa_zipformer_paths(
     name: &str,
     variant: &str,
@@ -424,6 +621,34 @@ pub fn sherpa_zipformer_paths(
         tokens: base_dir.join(preset.tokens),
         bpe_vocab,
         modeling_unit: preset.modeling_unit,
+    }))
+}
+
+pub fn moonshine_paths(
+    name: &str,
+    precision: &str,
+    model_dir: Option<&Path>,
+    tokenizer_path: &Path,
+) -> Result<Option<MoonshinePaths>, String> {
+    let model_name = moonshine_model_name(name)?;
+    if moonshine_preset(&model_name).is_none() {
+        return Ok(None);
+    }
+    let precision = moonshine_precision(precision)?;
+
+    let base_dir = match model_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => ggml_dir()
+            .join("moonshine")
+            .join(&model_name)
+            .join(&precision),
+    };
+
+    Ok(Some(MoonshinePaths {
+        dir: base_dir.clone(),
+        encoder: base_dir.join("encoder_model.onnx"),
+        decoder: base_dir.join("decoder_model_merged.onnx"),
+        tokenizer: tokenizer_path.to_path_buf(),
     }))
 }
 
@@ -496,6 +721,26 @@ async fn download_model(
             .finish_with_message(format!("{} done", progress.label));
     }
     Ok(())
+}
+
+async fn download_with_progress(
+    progress: &MultiProgress,
+    spinner_style: &ProgressStyle,
+    bar_style: &ProgressStyle,
+    url: &str,
+    dest: &Path,
+    label: String,
+) -> Result<(), String> {
+    let bar = progress.add(ProgressBar::new_spinner());
+    bar.set_message(label.clone());
+    bar.set_style(spinner_style.clone());
+    bar.enable_steady_tick(Duration::from_millis(120));
+    let progress = DownloadProgress {
+        bar,
+        label,
+        bar_style: bar_style.clone(),
+    };
+    download_model(url, dest, Some(progress)).await
 }
 
 async fn extract_tar_bz2(archive_path: &Path, output_dir: &Path) -> Result<(), String> {

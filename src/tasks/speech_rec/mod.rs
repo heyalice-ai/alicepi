@@ -13,6 +13,7 @@ use crate::watchdog::Heartbeat;
 mod whisper;
 #[cfg(feature = "sherpa")]
 mod sherpa;
+mod moonshine;
 
 pub trait SpeechRecStrategy: Send {
     fn on_audio_chunk(
@@ -29,6 +30,7 @@ pub trait SpeechRecStrategy: Send {
 enum SpeechRecEngine {
     Whisper,
     SherpaZipformer,
+    MoonshineOnnx,
 }
 
 impl SpeechRecEngine {
@@ -38,6 +40,7 @@ impl SpeechRecEngine {
             "sherpa" | "sherpa-zipformer" | "zipformer" | "sherpa_zipformer" => {
                 SpeechRecEngine::SherpaZipformer
             }
+            "moonshine" | "moonshine-onnx" | "moonshine_onnx" => SpeechRecEngine::MoonshineOnnx,
             _ => SpeechRecEngine::Whisper,
         }
     }
@@ -51,6 +54,7 @@ struct SpeechRecConfig {
     whisper: whisper::WhisperConfig,
     #[allow(dead_code)]
     sherpa: SherpaConfig,
+    moonshine: moonshine::MoonshineConfig,
     hangover_silence: Duration,
 }
 
@@ -67,6 +71,7 @@ impl SpeechRecConfig {
             engine,
             whisper: whisper::WhisperConfig::from_env(),
             sherpa: SherpaConfig::from_env(sample_rate),
+            moonshine: moonshine::MoonshineConfig::from_env(),
             hangover_silence: Duration::from_millis(hangover_ms),
         }
     }
@@ -227,6 +232,22 @@ pub async fn run(
             Err(err) => {
                 tracing::warn!("sherpa model download failed: {}", err);
             }
+        }
+    }
+    if config.engine == SpeechRecEngine::MoonshineOnnx {
+        let model_dir = config.moonshine.model_dir.as_deref();
+        let result = run_with_heartbeat(
+            &heartbeat,
+            model_download::ensure_moonshine_model(
+                &config.moonshine.model,
+                &config.moonshine.precision,
+                model_dir,
+                &config.moonshine.tokenizer,
+            ),
+        )
+        .await;
+        if let Err(err) = result {
+            tracing::warn!("moonshine model download failed: {}", err);
         }
     }
 
@@ -478,6 +499,10 @@ fn init_backend(config: &SpeechRecConfig) -> Result<Box<dyn SpeechRecStrategy>, 
             {
                 Err("sherpa engine requested but 'sherpa' feature disabled".to_string())
             }
+        }
+        SpeechRecEngine::MoonshineOnnx => {
+            let backend = moonshine::init_moonshine_backend(&config.moonshine)?;
+            Ok(Box::new(backend))
         }
     }
 }

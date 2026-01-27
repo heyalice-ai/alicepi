@@ -44,6 +44,35 @@ cargo run --bin alicepi -- client --addr 127.0.0.1:7878 lid-open
 cargo run --bin alicepi -- client --addr 127.0.0.1:7878 lid-close
 ```
 
+## Speech Recognition
+
+Select the speech recognition backend with `SR_ENGINE`:
+
+* `whisper` (default)
+* `sherpa` / `sherpa-zipformer` (requires `--features sherpa`)
+* `moonshine` / `moonshine-onnx`
+
+### Moonshine ONNX (Rust/ORT)
+
+Moonshine expects 16 kHz audio. It supports partials by re-running inference over a rolling window (configure `SR_MOONSHINE_PARTIAL_SECS`).
+
+Required files:
+
+* `encoder_model.onnx`
+* `decoder_model_merged.onnx`
+* `tokenizer.json`
+
+Environment variables:
+
+```
+SR_ENGINE=moonshine
+SR_MOONSHINE_MODEL=moonshine/tiny
+SR_MOONSHINE_PRECISION=float
+SR_MOONSHINE_MODEL_DIR=models/moonshine/tiny/float
+SR_MOONSHINE_TOKENIZER=assets/moonshine_tiny_tokenizer.json
+SR_MOONSHINE_PARTIAL_SECS=0
+```
+
 ## GPIO
 
 Enable GPIO input support on Raspberry Pi:

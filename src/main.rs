@@ -47,6 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await
                     .map_err(|err| format!("model download failed: {}", err))?;
 
+                let assets_dir = model_download::assets_dir_path();
+                model_download::ensure_moonshine_english_models_with_progress(&assets_dir)
+                    .await
+                    .map_err(|err| format!("moonshine model download failed: {}", err))?;
+
                 println!("Model download completed. Moving forward.");
             }
             
