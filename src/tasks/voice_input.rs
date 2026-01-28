@@ -42,7 +42,6 @@ impl VoiceInputConfig {
 
 struct CaptureStream {
     receiver: mpsc::Receiver<Vec<f32>>,
-    sample_rate: u32,
     channels: usize,
     shutdown: Option<std_mpsc::Sender<()>>,
 }
@@ -62,7 +61,6 @@ impl Drop for CaptureStream {
 }
 
 struct AudioPipeline {
-    target_rate: u32,
     target_channels: usize,
     chunk_size: usize,
     pending: Vec<f32>,
@@ -77,7 +75,6 @@ impl AudioPipeline {
             None
         };
         Self {
-            target_rate,
             target_channels,
             chunk_size,
             pending: Vec::new(),
@@ -324,7 +321,6 @@ fn start_capture(
         Ok((
             CaptureStream {
                 receiver: rx,
-                sample_rate: spec.sample_rate,
                 channels: spec.channels as usize,
                 shutdown: None,
             },
@@ -388,7 +384,6 @@ fn start_live_capture(
     Ok((
         CaptureStream {
             receiver: rx,
-            sample_rate: info.sample_rate,
             channels: info.channels,
             shutdown: Some(shutdown_tx),
         },

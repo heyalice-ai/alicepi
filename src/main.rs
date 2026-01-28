@@ -8,7 +8,6 @@ mod tasks;
 mod watchdog;
 
 use std::io::Read;
-use std::process::exit;
 use std::time::Duration;
 
 use clap::Parser;

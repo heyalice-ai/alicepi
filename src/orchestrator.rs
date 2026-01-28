@@ -236,7 +236,6 @@ impl Orchestrator {
                                     let started_at = started_at;
                                     tokio::spawn(async move {
                                         let mut logged_first_chunk = false;
-                                        let mut chunk_count: u64 = 0;
                                         if voice_output
                                             .send(VoiceOutputCommand::StartStream {
                                                 format: audio.format,
