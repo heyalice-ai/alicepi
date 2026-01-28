@@ -191,7 +191,7 @@ enum TranscribeRequest {
 #[derive(Debug)]
 struct TranscribeResponse {
     generation: u64,
-    text: Result<String, String>,
+    text: Result<Option<String>, String>,
     is_final: bool,
 }
 
@@ -291,21 +291,40 @@ pub async fn run(
                             continue;
                         }
                         match response.text {
-                            Ok(text) => {
-                                if !text.trim().is_empty() {
+                            Ok(Some(text)) => {
+                                if response.is_final {
+                                    if !text.trim().is_empty() {
+                                        tracing::info!(
+                                            "speech_rec result before orchestrator: is_final=true text={}",
+                                            text
+                                        );
+                                        let _ = events.send(SpeechRecEvent::Final {
+                                            text: Some(text),
+                                        });
+                                    } else {
+                                        let _ = events.send(SpeechRecEvent::Final { text: None });
+                                    }
+                                } else if !text.trim().is_empty() {
                                     tracing::info!(
-                                        "speech_rec result before orchestrator: is_final={} text={}",
-                                        response.is_final,
+                                        "speech_rec result before orchestrator: is_final=false text={}",
                                         text
                                     );
                                     let _ = events.send(SpeechRecEvent::Text {
                                         text,
-                                        is_final: response.is_final,
+                                        is_final: false,
                                     });
+                                }
+                            }
+                            Ok(None) => {
+                                if response.is_final {
+                                    let _ = events.send(SpeechRecEvent::Final { text: None });
                                 }
                             }
                             Err(err) => {
                                 tracing::warn!("speech rec transcription failed: {}", err);
+                                if response.is_final {
+                                    let _ = events.send(SpeechRecEvent::Final { text: None });
+                                }
                             }
                         }
                     }
@@ -453,7 +472,7 @@ fn spawn_transcriber(
                     if let Ok(Some(text)) = result {
                         let _ = resp_tx.blocking_send(TranscribeResponse {
                             generation,
-                            text: Ok(text),
+                            text: Ok(Some(text)),
                             is_final: false,
                         });
                     }
@@ -468,13 +487,15 @@ fn spawn_transcriber(
                         });
                         continue;
                     }
-                    if let Ok(Some(text)) = result {
-                        let _ = resp_tx.blocking_send(TranscribeResponse {
-                            generation,
-                            text: Ok(text),
-                            is_final: true,
-                        });
-                    }
+                    let text = match result {
+                        Ok(value) => value,
+                        Err(_) => None,
+                    };
+                    let _ = resp_tx.blocking_send(TranscribeResponse {
+                        generation,
+                        text: Ok(text),
+                        is_final: true,
+                    });
                 }
                 TranscribeRequest::Reset => {
                     backend.reset();

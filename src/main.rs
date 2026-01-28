@@ -146,7 +146,7 @@ async fn run_led_test(pin: u8) -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     println!("Status LED test mode");
-    println!("Commands: I=Idle, L=Listening, P=Processing, S=Speaking, Q=Quit");
+    println!("Commands: I=Idle, L=Listening, T=Transcribing, P=Processing, S=Speaking, Q=Quit");
 
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
@@ -163,6 +163,7 @@ async fn run_led_test(pin: u8) -> Result<(), Box<dyn std::error::Error>> {
                 let state = match cmd.to_ascii_lowercase().as_str() {
                     "i" | "idle" => Some(RuntimeState::Idle),
                     "l" | "listening" => Some(RuntimeState::Listening),
+                    "t" | "transcribing" => Some(RuntimeState::Transcribing),
                     "p" | "processing" => Some(RuntimeState::Processing),
                     "s" | "speaking" => Some(RuntimeState::Speaking),
                     "q" | "quit" | "exit" => break,

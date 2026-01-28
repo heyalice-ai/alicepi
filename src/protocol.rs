@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub enum RuntimeState {
     Idle,
     Listening,
+    Transcribing,
     Processing,
     Speaking,
 }
@@ -13,6 +14,7 @@ impl RuntimeState {
         match self {
             RuntimeState::Idle => "Idle",
             RuntimeState::Listening => "Listening",
+            RuntimeState::Transcribing => "Transcribing",
             RuntimeState::Processing => "Processing",
             RuntimeState::Speaking => "Speaking",
         }
@@ -66,6 +68,12 @@ pub enum VoiceInputEvent {
 #[derive(Debug, Clone)]
 pub enum SpeechRecEvent {
     Text { text: String, is_final: bool },
+    Final { text: Option<String> },
+}
+
+#[derive(Debug, Clone)]
+pub enum VoiceOutputEvent {
+    Finished,
 }
 
 #[derive(Debug, Clone)]

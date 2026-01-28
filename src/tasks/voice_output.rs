@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,15 +12,22 @@ use rodio::buffer::SamplesBuffer;
 use rodio::mixer::Mixer;
 use rodio::source::{SineWave, Zero};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
-use crate::protocol::{AudioOutput, AudioStreamFormat, VoiceOutputCommand};
+use crate::protocol::{AudioOutput, AudioStreamFormat, VoiceOutputCommand, VoiceOutputEvent};
 
 const START_SILENCE_MS: u64 = 50;
 
-pub async fn run(mut rx: mpsc::Receiver<VoiceOutputCommand>, mut shutdown: watch::Receiver<bool>) {
+pub async fn run(
+    mut rx: mpsc::Receiver<VoiceOutputCommand>,
+    events: broadcast::Sender<VoiceOutputEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let playback_generation = Arc::new(AtomicU64::new(0));
     let (tx, thread_rx) = std_mpsc::channel();
-    std::thread::spawn(move || output_loop(thread_rx));
+    let thread_events = events.clone();
+    let thread_generation = Arc::clone(&playback_generation);
+    std::thread::spawn(move || output_loop(thread_rx, thread_events, thread_generation));
 
     loop {
         tokio::select! {
@@ -45,7 +52,11 @@ pub async fn run(mut rx: mpsc::Receiver<VoiceOutputCommand>, mut shutdown: watch
     }
 }
 
-fn output_loop(rx: std_mpsc::Receiver<VoiceOutputCommand>) {
+fn output_loop(
+    rx: std_mpsc::Receiver<VoiceOutputCommand>,
+    events: broadcast::Sender<VoiceOutputEvent>,
+    playback_generation: Arc<AtomicU64>,
+) {
     let stream = match open_output_stream() {
         Ok(value) => value,
         Err(err) => {
@@ -54,84 +65,135 @@ fn output_loop(rx: std_mpsc::Receiver<VoiceOutputCommand>) {
         }
     };
     let handle = stream.mixer();
-    let mut current_sink: Option<Sink> = None;
+    let mut current_sink: Option<Arc<Sink>> = None;
     let mut current_stream: Option<StreamState> = None;
 
     while let Ok(command) = rx.recv() {
         match command {
-            VoiceOutputCommand::PlayText { text } => {
-                stop_stream(&mut current_stream);
-                stop_sink(&mut current_sink);
-                play_beep(&handle, &mut current_sink);
-                tracing::info!("voice output: {}", text);
-            }
-            VoiceOutputCommand::PlayAudioFile { path } => {
-                stop_stream(&mut current_stream);
-                stop_sink(&mut current_sink);
-                match play_audio_file(&handle, &path) {
-                    Ok(sink) => {
-                        current_sink = Some(sink);
-                        tracing::info!("voice output audio file: {}", path);
+                VoiceOutputCommand::PlayText { text } => {
+                    stop_stream(&mut current_stream);
+                    stop_sink(&mut current_sink);
+                    let generation = next_generation(&playback_generation);
+                    play_beep(&handle, &mut current_sink);
+                    if let Some(sink) = current_sink.as_ref() {
+                        spawn_sink_finish_thread(
+                            Arc::clone(sink),
+                            events.clone(),
+                            Arc::clone(&playback_generation),
+                            generation,
+                        );
                     }
-                    Err(err) => {
-                        tracing::warn!("voice output failed to play {}: {}", path, err);
+                    tracing::info!("voice output: {}", text);
+                }
+                VoiceOutputCommand::PlayAudioFile { path } => {
+                    stop_stream(&mut current_stream);
+                    stop_sink(&mut current_sink);
+                    let generation = next_generation(&playback_generation);
+                    match play_audio_file(&handle, &path) {
+                        Ok(sink) => {
+                            let sink = Arc::new(sink);
+                            spawn_sink_finish_thread(
+                                Arc::clone(&sink),
+                                events.clone(),
+                                Arc::clone(&playback_generation),
+                                generation,
+                            );
+                            current_sink = Some(sink);
+                            tracing::info!("voice output audio file: {}", path);
+                        }
+                        Err(err) => {
+                            tracing::warn!("voice output failed to play {}: {}", path, err);
+                        }
                     }
                 }
-            }
-            VoiceOutputCommand::PlayAudio { audio } => {
-                stop_stream(&mut current_stream);
-                stop_sink(&mut current_sink);
-                match play_audio(&handle, audio) {
-                    Ok(sink) => {
-                        current_sink = Some(sink);
-                        tracing::info!("voice output: audio buffer");
-                    }
-                    Err(err) => {
-                        tracing::warn!("voice output failed to play buffer: {}", err);
-                    }
-                }
-            }
-            VoiceOutputCommand::StartStream { format } => {
-                stop_stream(&mut current_stream);
-                stop_sink(&mut current_sink);
-                match start_stream(&handle, format) {
-                    Ok(stream) => {
-                        current_stream = Some(stream);
-                        tracing::info!("voice output: audio stream started");
-                    }
-                    Err(err) => {
-                        tracing::warn!("voice output failed to start stream: {}", err);
+                VoiceOutputCommand::PlayAudio { audio } => {
+                    stop_stream(&mut current_stream);
+                    stop_sink(&mut current_sink);
+                    let generation = next_generation(&playback_generation);
+                    match play_audio(&handle, audio) {
+                        Ok(sink) => {
+                            let sink = Arc::new(sink);
+                            spawn_sink_finish_thread(
+                                Arc::clone(&sink),
+                                events.clone(),
+                                Arc::clone(&playback_generation),
+                                generation,
+                            );
+                            current_sink = Some(sink);
+                            tracing::info!("voice output: audio buffer");
+                        }
+                        Err(err) => {
+                            tracing::warn!("voice output failed to play buffer: {}", err);
+                        }
                     }
                 }
-            }
-            VoiceOutputCommand::StreamChunk { data } => {
-                if let Some(stream) = &mut current_stream {
-                    if let Err(err) = stream.push(data) {
-                        tracing::warn!("voice output stream error: {}", err);
-                        stop_stream(&mut current_stream);
+                VoiceOutputCommand::StartStream { format } => {
+                    stop_stream(&mut current_stream);
+                    stop_sink(&mut current_sink);
+                    let generation = next_generation(&playback_generation);
+                    match start_stream(
+                        &handle,
+                        format,
+                        events.clone(),
+                        Arc::clone(&playback_generation),
+                        generation,
+                    ) {
+                        Ok(stream) => {
+                            current_stream = Some(stream);
+                            tracing::info!("voice output: audio stream started");
+                        }
+                        Err(err) => {
+                            tracing::warn!("voice output failed to start stream: {}", err);
+                        }
                     }
                 }
-            }
-            VoiceOutputCommand::EndStream => {
-                if let Some(stream) = current_stream.as_mut() {
-                    stream.end();
+                VoiceOutputCommand::StreamChunk { data } => {
+                    if let Some(stream) = &mut current_stream {
+                        if let Err(err) = stream.push(data) {
+                            tracing::warn!("voice output stream error: {}", err);
+                            stop_stream(&mut current_stream);
+                        }
+                    }
                 }
-                tracing::info!("voice output: audio stream ended");
-            }
-            VoiceOutputCommand::Stop => {
-                stop_stream(&mut current_stream);
-                stop_sink(&mut current_sink);
-                tracing::info!("voice output stop");
-            }
-            VoiceOutputCommand::Shutdown => {
-                stop_stream(&mut current_stream);
-                stop_sink(&mut current_sink);
-                break;
-            }
+                VoiceOutputCommand::EndStream => {
+                    if let Some(stream) = current_stream.as_mut() {
+                        stream.end();
+                    }
+                    tracing::info!("voice output: audio stream ended");
+                }
+                VoiceOutputCommand::Stop => {
+                    stop_stream(&mut current_stream);
+                    stop_sink(&mut current_sink);
+                    next_generation(&playback_generation);
+                    tracing::info!("voice output stop");
+                }
+                VoiceOutputCommand::Shutdown => {
+                    stop_stream(&mut current_stream);
+                    stop_sink(&mut current_sink);
+                    next_generation(&playback_generation);
+                    break;
+                }
         }
     }
 }
 
+fn next_generation(playback_generation: &Arc<AtomicU64>) -> u64 {
+    playback_generation.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn spawn_sink_finish_thread(
+    sink: Arc<Sink>,
+    events: broadcast::Sender<VoiceOutputEvent>,
+    playback_generation: Arc<AtomicU64>,
+    generation: u64,
+) {
+    std::thread::spawn(move || {
+        sink.sleep_until_end();
+        if playback_generation.load(Ordering::SeqCst) == generation {
+            let _ = events.send(VoiceOutputEvent::Finished);
+        }
+    });
+}
 fn play_audio_file(handle: &Mixer, path: &str) -> Result<Sink, String> {
     let file = File::open(path).map_err(|err| format!("open failed: {}", err))?;
     let reader = BufReader::new(file);
@@ -194,7 +256,7 @@ enum StreamMessage {
 
 enum StreamState {
     Pcm {
-        sink: Sink,
+        sink: Arc<Sink>,
         sample_rate: u32,
         channels: u16,
         /// Accumulates early chunks until `min_bytes` is reached to avoid underflow.
@@ -202,6 +264,9 @@ enum StreamState {
         /// Minimum buffered bytes before pushing PCM to the sink.
         min_bytes: usize,
         timings: Arc<Mutex<StreamTimings>>,
+        events: broadcast::Sender<VoiceOutputEvent>,
+        playback_generation: Arc<AtomicU64>,
+        generation: u64,
     },
     Mp3 {
         tx: std_mpsc::Sender<StreamMessage>,
@@ -225,7 +290,14 @@ impl StreamState {
                 pending,
                 min_bytes,
                 ..
-            } => push_pcm_buffered(sink, pending, data, *min_bytes, *sample_rate, *channels),
+            } => push_pcm_buffered(
+                sink.as_ref(),
+                pending,
+                data,
+                *min_bytes,
+                *sample_rate,
+                *channels,
+            ),
             StreamState::Mp3 {
                 tx,
                 pending,
@@ -259,13 +331,22 @@ impl StreamState {
                 channels,
                 pending,
                 timings,
+                events,
+                playback_generation,
+                generation,
                 ..
             } => {
                 if !pending.is_empty() {
                     let chunk = std::mem::take(pending);
-                    let _ = push_pcm_chunk(sink, chunk, *sample_rate, *channels);
+                    let _ = push_pcm_chunk(sink.as_ref(), chunk, *sample_rate, *channels);
                 }
                 log_total_playback("pcm", Arc::clone(timings), false);
+                spawn_sink_finish_thread(
+                    Arc::clone(sink),
+                    events.clone(),
+                    Arc::clone(playback_generation),
+                    *generation,
+                );
             }
             StreamState::Mp3 { tx, pending, .. } => {
                 if !pending.is_empty() {
@@ -287,13 +368,16 @@ impl StreamState {
 fn start_stream(
     handle: &Mixer,
     format: AudioStreamFormat,
+    events: broadcast::Sender<VoiceOutputEvent>,
+    playback_generation: Arc<AtomicU64>,
+    generation: u64,
 ) -> Result<StreamState, String> {
     match format {
         AudioStreamFormat::Pcm {
             sample_rate,
             channels,
         } => {
-            let sink = Sink::connect_new(handle);
+            let sink = Arc::new(Sink::connect_new(handle));
             sink.play();
             let min_bytes = min_pcm_chunk_bytes(sample_rate, channels);
             let pending = silence_pcm_bytes(sample_rate, channels, START_SILENCE_MS);
@@ -307,6 +391,9 @@ fn start_stream(
                     sample_rate,
                     channels,
                 ))))),
+                events,
+                playback_generation,
+                generation,
             })
         }
         AudioStreamFormat::Mp3 => {
@@ -316,8 +403,18 @@ fn start_stream(
             let thread_handle = handle.clone();
             let thread_stop = Arc::clone(&stop);
             let thread_timings = Arc::clone(&timings);
+            let thread_events = events.clone();
+            let thread_generation = Arc::clone(&playback_generation);
             std::thread::spawn(move || {
-                run_mp3_stream(&thread_handle, rx, thread_stop, thread_timings)
+                run_mp3_stream(
+                    &thread_handle,
+                    rx,
+                    thread_stop,
+                    thread_timings,
+                    thread_events,
+                    thread_generation,
+                    generation,
+                )
             });
             Ok(StreamState::Mp3 {
                 tx,
@@ -516,6 +613,9 @@ fn run_mp3_stream(
     rx: std_mpsc::Receiver<StreamMessage>,
     stop: Arc<AtomicBool>,
     timings: Arc<Mutex<StreamTimings>>,
+    events: broadcast::Sender<VoiceOutputEvent>,
+    playback_generation: Arc<AtomicU64>,
+    generation: u64,
 ) {
     let rx = Arc::new(Mutex::new(rx));
     let reader = Mp3StreamReader::new(rx, vec![], false);
@@ -560,6 +660,9 @@ fn run_mp3_stream(
         }
         if sink.empty() {
             log_total_playback("mp3", timings, false);
+            if playback_generation.load(Ordering::SeqCst) == generation {
+                let _ = events.send(VoiceOutputEvent::Finished);
+            }
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -803,8 +906,8 @@ fn mono_from_frame(frame: &[f32], channel_count: usize) -> f32 {
     sum / channel_count as f32
 }
 
-fn play_beep(handle: &Mixer, current_sink: &mut Option<Sink>) {
-    let sink = Sink::connect_new(handle);
+fn play_beep(handle: &Mixer, current_sink: &mut Option<Arc<Sink>>) {
+    let sink = Arc::new(Sink::connect_new(handle));
     let source = SineWave::new(440.0)
         .take_duration(Duration::from_millis(250))
         .amplify(0.15);
@@ -813,7 +916,7 @@ fn play_beep(handle: &Mixer, current_sink: &mut Option<Sink>) {
     *current_sink = Some(sink);
 }
 
-fn stop_sink(current_sink: &mut Option<Sink>) {
+fn stop_sink(current_sink: &mut Option<Arc<Sink>>) {
     if let Some(sink) = current_sink.take() {
         sink.stop();
     }

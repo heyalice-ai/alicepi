@@ -24,7 +24,7 @@ pub async fn run(
 
     #[cfg(feature = "gpio")]
     {
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
 
         use rppal::gpio::{Gpio, Level, OutputPin};
         use tokio::time;
@@ -164,23 +164,25 @@ struct StatusLedConfig {
     processing_cycle: Duration,
     transition_time: Duration,
     pwm_hz: u32,
+    gamma: f32,
     pulse_while_speaking: bool,
 }
 
 #[cfg(feature = "gpio")]
 impl StatusLedConfig {
     fn from_env() -> Self {
-        let idle_brightness = env_brightness("GPIO_STATUS_LED_IDLE_BRIGHT", 0.2);
+        let idle_brightness = env_brightness("GPIO_STATUS_LED_IDLE_BRIGHT", 0.1);
         let listening_brightness = env_brightness("GPIO_STATUS_LED_LISTENING_BRIGHT", 0.3);
         let max_brightness = env_brightness("GPIO_STATUS_LED_MAX_BRIGHT", 0.8);
         let mut processing_cycle =
-            env_duration_seconds("GPIO_STATUS_LED_PROCESSING_CYCLE_TIME", 3.0);
+            env_duration_seconds("GPIO_STATUS_LED_PROCESSING_CYCLE_TIME", 1.0);
         if processing_cycle.is_zero() {
-            processing_cycle = Duration::from_secs_f32(3.0);
+            processing_cycle = Duration::from_secs_f32(1.0);
         }
-        let transition_time = env_duration_seconds("GPIO_STATUS_LED_TRANSITION_TIME", 0.5);
+        let transition_time = env_duration_seconds("GPIO_STATUS_LED_TRANSITION_TIME", 0.2);
         let pwm_hz = env_u32("GPIO_STATUS_LED_PWM_HZ", 800).max(1);
-        let pulse_while_speaking = env_bool("GPIO_STATUS_LED_PULSE_WHILE_SPEAKING", false);
+        let gamma = env_f32("GPIO_STATUS_LED_GAMMA", 2.2).max(0.01);
+        let pulse_while_speaking = env_bool("GPIO_STATUS_LED_PULSE_WHILE_SPEAKING", true);
         Self {
             idle_brightness,
             listening_brightness,
@@ -188,6 +190,7 @@ impl StatusLedConfig {
             processing_cycle,
             transition_time,
             pwm_hz,
+            gamma,
             pulse_while_speaking,
         }
     }
@@ -213,13 +216,9 @@ async fn run_status_led(
     use std::time::Instant;
 
     let pwm_period = Duration::from_secs_f32(1.0 / config.pwm_hz as f32);
-    let mut current = 0.0f32;
     let mut target = 0.0f32;
-    let mut last_logged_target = -1.0f32;
-    let mut last_logged_mode = LedMode::Fixed;
     let mut mode = LedMode::Fixed;
-    let mut pulse_high = false;
-    let mut next_pulse_switch = Instant::now() + config.processing_cycle;
+    let mut pulse_phase_start = Instant::now();
     let mut last_update = Instant::now();
 
     let initial_status = status_rx.borrow().clone();
@@ -228,12 +227,11 @@ async fn run_status_led(
         &config,
         &mut mode,
         &mut target,
-        &mut pulse_high,
-        &mut next_pulse_switch,
+        &mut pulse_phase_start,
     );
-    current = target;
-    last_logged_target = target;
-    last_logged_mode = mode;
+    let mut current = target;
+    let mut last_logged_target = target;
+    let mut last_logged_mode = mode;
     tracing::trace!(
         duty = current,
         target = target,
@@ -255,8 +253,7 @@ async fn run_status_led(
                 &config,
                 &mut mode,
                 &mut target,
-                &mut pulse_high,
-                &mut next_pulse_switch,
+                &mut pulse_phase_start,
             );
             if (target - last_logged_target).abs() > f32::EPSILON || mode != last_logged_mode {
                 tracing::trace!(
@@ -272,32 +269,29 @@ async fn run_status_led(
         }
 
         let now = Instant::now();
-        if mode == LedMode::Pulse && now >= next_pulse_switch {
-            while next_pulse_switch <= now {
-                pulse_high = !pulse_high;
-                next_pulse_switch += config.processing_cycle;
-            }
-            target = if pulse_high {
-                config.max_brightness
-            } else {
-                config.idle_brightness
-            };
-            if (target - last_logged_target).abs() > f32::EPSILON {
+        let duty = if mode == LedMode::Pulse {
+            let cycle_secs = config.processing_cycle.as_secs_f32().max(f32::EPSILON);
+            let elapsed = now.saturating_duration_since(pulse_phase_start).as_secs_f32();
+            let t = (elapsed / cycle_secs) % 1.0;
+            let s = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * t).cos();
+            let duty = s.powf(config.gamma).clamp(0.0, 1.0);
+            if (duty - last_logged_target).abs() > f32::EPSILON || mode != last_logged_mode {
                 tracing::trace!(
                     target: "alicepi::tasks::gpio::status_led::per_cycle",
-                    duty = current,
-                    target = target,
+                    duty = duty,
                     mode = ?mode,
-                    "status led pulse target updated"
+                    "status led pulse duty updated"
                 );
-                last_logged_target = target;
+                last_logged_target = duty;
+                last_logged_mode = mode;
             }
-        }
-
-        let dt = now.saturating_duration_since(last_update);
-        current = step_toward(current, target, dt, config.transition_time);
-        last_update = now;
-        let duty = current.clamp(0.0, 1.0);
+            duty
+        } else {
+            let dt = now.saturating_duration_since(last_update);
+            current = step_toward(current, target, dt, config.transition_time);
+            last_update = now;
+            current.clamp(0.0, 1.0)
+        };
         if duty <= 0.0 {
             tracing::trace!(
                 duty = duty,
@@ -346,17 +340,15 @@ fn apply_state_target(
     config: &StatusLedConfig,
     mode: &mut LedMode,
     target: &mut f32,
-    pulse_high: &mut bool,
-    next_pulse_switch: &mut Instant,
+    pulse_phase_start: &mut Instant,
 ) {
     let desired_mode = desired_led_mode(status.state, config.pulse_while_speaking);
     match desired_mode {
         LedMode::Pulse => {
             if *mode != LedMode::Pulse {
                 *mode = LedMode::Pulse;
-                *pulse_high = false;
                 *target = config.idle_brightness;
-                *next_pulse_switch = Instant::now() + config.processing_cycle;
+                *pulse_phase_start = Instant::now();
             }
         }
         LedMode::Fixed => {
@@ -369,6 +361,7 @@ fn apply_state_target(
 #[cfg(feature = "gpio")]
 fn desired_led_mode(state: RuntimeState, pulse_while_speaking: bool) -> LedMode {
     match state {
+        RuntimeState::Transcribing => LedMode::Pulse,
         RuntimeState::Processing => LedMode::Pulse,
         RuntimeState::Speaking if pulse_while_speaking => LedMode::Pulse,
         _ => LedMode::Fixed,
@@ -380,6 +373,7 @@ fn fixed_target_for_state(state: RuntimeState, config: &StatusLedConfig) -> f32 
     match state {
         RuntimeState::Listening => config.listening_brightness,
         RuntimeState::Speaking => config.max_brightness,
+        RuntimeState::Transcribing => config.idle_brightness,
         RuntimeState::Processing => config.idle_brightness,
         _ => config.idle_brightness,
     }

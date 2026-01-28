@@ -15,7 +15,7 @@ use crate::engine::{
 };
 use crate::protocol::{
     ClientCommand, RuntimeState, ServerReply, SpeechRecCommand, SpeechRecEvent, StatusSnapshot,
-    VoiceInputCommand, VoiceInputEvent, VoiceOutputCommand,
+    VoiceInputCommand, VoiceInputEvent, VoiceOutputCommand, VoiceOutputEvent,
 };
 use crate::tasks;
 use crate::watchdog::{self, CommandHandle};
@@ -75,6 +75,7 @@ impl Orchestrator {
         mut client_rx: mpsc::Receiver<ClientCommand>,
         mut voice_events: broadcast::Receiver<VoiceInputEvent>,
         mut sr_events: broadcast::Receiver<SpeechRecEvent>,
+        mut voice_output_events: broadcast::Receiver<VoiceOutputEvent>,
         mut internal_rx: mpsc::Receiver<OrchestratorEvent>,
         mut shutdown: watch::Receiver<bool>,
     ) {
@@ -104,6 +105,15 @@ impl Orchestrator {
                         Ok(event) => self.handle_speech_event(event).await,
                         Err(broadcast::error::RecvError::Lagged(count)) => {
                             tracing::warn!("speech rec events lagged by {}", count);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                event = voice_output_events.recv() => {
+                    match event {
+                        Ok(event) => self.handle_voice_output_event(event).await,
+                        Err(broadcast::error::RecvError::Lagged(count)) => {
+                            tracing::warn!("voice output events lagged by {}", count);
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
@@ -181,7 +191,7 @@ impl Orchestrator {
 
     async fn handle_button_release(&mut self) {
         self.set_mic_muted(true);
-        self.set_state(RuntimeState::Idle);
+        self.set_state(RuntimeState::Transcribing);
         let _ = self.voice_input.send(VoiceInputCommand::StopListening).await;
     }
 
@@ -201,6 +211,26 @@ impl Orchestrator {
             SpeechRecEvent::Text { text, is_final } => {
                 if is_final {
                     self.process_text(text).await;
+                }
+            }
+            SpeechRecEvent::Final { text } => match text {
+                Some(text) => {
+                    self.process_text(text).await;
+                }
+                None => {
+                    if self.state == RuntimeState::Transcribing {
+                        self.set_state(RuntimeState::Idle);
+                    }
+                }
+            },
+        }
+    }
+
+    async fn handle_voice_output_event(&mut self, event: VoiceOutputEvent) {
+        match event {
+            VoiceOutputEvent::Finished => {
+                if self.state == RuntimeState::Speaking {
+                    self.set_state(RuntimeState::Idle);
                 }
             }
         }
@@ -254,7 +284,6 @@ impl Orchestrator {
                                             }
                                             match chunk {
                                                 Ok(bytes) => {
-                                                    chunk_count += 1;
                                                     if !logged_first_chunk {
                                                         let wait = started_at.elapsed();
                                                         tracing::info!(
@@ -396,6 +425,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
 
     let (voice_events_tx, voice_events_rx) = broadcast::channel(32);
     let (sr_events_tx, sr_events_rx) = broadcast::channel(32);
+    let (voice_output_events_tx, voice_output_events_rx) = broadcast::channel(32);
 
     let (voice_input_tx, voice_input_rx) = mpsc::channel(32);
     let voice_input_handle = CommandHandle::new(voice_input_tx.clone());
@@ -435,7 +465,10 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
 
     let (voice_output_handle, _voice_output_join) = watchdog::spawn_task(
         32,
-        |rx, shutdown| async move { tasks::voice_output::run(rx, shutdown).await },
+        |rx, shutdown| {
+            let events = voice_output_events_tx.clone();
+            async move { tasks::voice_output::run(rx, events, shutdown).await }
+        },
         shutdown_rx.clone(),
     )
     .await;
@@ -489,6 +522,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), String> {
             client_rx,
             voice_events_rx,
             sr_events_rx,
+            voice_output_events_rx,
             internal_rx,
             shutdown_rx.clone(),
         )
