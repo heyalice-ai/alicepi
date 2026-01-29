@@ -59,7 +59,8 @@ jobs:
         env:
           CROSS_CONTAINER_ENGINE: docker
           PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cross build --release --locked --target ${{ matrix.target }}
+          XDG_CACHE_HOME: ${{ github.workspace }}/.cache
+        run: env && cross build --release --locked --target ${{ matrix.target }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
