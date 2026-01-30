@@ -1,0 +1,29 @@
+FROM debian:trixie
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN dpkg --add-architecture arm64 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        clang \
+        cmake \
+        crossbuild-essential-arm64 \
+        curl \
+        git \
+        libasound2-dev:arm64 \
+        libclang-dev \
+        pkg-config \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make libclang discoverable for bindgen/clang-sys.
+RUN set -eux; \
+    libclang_path="$(find /usr/lib -name 'libclang.so*' -type f | head -n 1 || true)"; \
+    if [ -n "$libclang_path" ]; then ln -sf "$libclang_path" /usr/lib/libclang.so; fi
+
+ENV LIBCLANG_PATH=/usr/lib
+
+ENV PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+ENV PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu
